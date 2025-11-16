@@ -105,7 +105,79 @@ namespace lfs::core {
 
         _FoVx = focal2fov(_focal_x, _camera_width);
         _FoVy = focal2fov(_focal_y, _camera_height);
+
+        // Create CUDA stream for async image loading (like reference implementation)
+        cudaStreamCreate(&_stream);
     }
+
+    Camera::~Camera() {
+        // Destroy CUDA stream if it was created
+        if (_stream) {
+            cudaStreamDestroy(_stream);
+            _stream = nullptr;
+        }
+    }
+
+    Camera::Camera(Camera&& other) noexcept
+        : _FoVx(other._FoVx),
+          _FoVy(other._FoVy),
+          _uid(other._uid),
+          _focal_x(other._focal_x),
+          _focal_y(other._focal_y),
+          _center_x(other._center_x),
+          _center_y(other._center_y),
+          _R(std::move(other._R)),
+          _T(std::move(other._T)),
+          _radial_distortion(std::move(other._radial_distortion)),
+          _tangential_distortion(std::move(other._tangential_distortion)),
+          _image_path(std::move(other._image_path)),
+          _image_name(std::move(other._image_name)),
+          _camera_width(other._camera_width),
+          _camera_height(other._camera_height),
+          _image_width(other._image_width),
+          _image_height(other._image_height),
+          _world_view_transform(std::move(other._world_view_transform)),
+          _cam_position(std::move(other._cam_position)),
+          _stream(other._stream) {
+        // Take ownership of the stream
+        other._stream = nullptr;
+    }
+
+    Camera& Camera::operator=(Camera&& other) noexcept {
+        if (this != &other) {
+            // Destroy our current stream
+            if (_stream) {
+                cudaStreamDestroy(_stream);
+            }
+
+            // Move all members
+            _FoVx = other._FoVx;
+            _FoVy = other._FoVy;
+            _uid = other._uid;
+            _focal_x = other._focal_x;
+            _focal_y = other._focal_y;
+            _center_x = other._center_x;
+            _center_y = other._center_y;
+            _R = std::move(other._R);
+            _T = std::move(other._T);
+            _radial_distortion = std::move(other._radial_distortion);
+            _tangential_distortion = std::move(other._tangential_distortion);
+            _image_path = std::move(other._image_path);
+            _image_name = std::move(other._image_name);
+            _camera_width = other._camera_width;
+            _camera_height = other._camera_height;
+            _image_width = other._image_width;
+            _image_height = other._image_height;
+            _world_view_transform = std::move(other._world_view_transform);
+            _cam_position = std::move(other._cam_position);
+
+            // Take ownership of the stream
+            _stream = other._stream;
+            other._stream = nullptr;
+        }
+        return *this;
+    }
+
     Camera::Camera(const Camera& other, const Tensor& transform)
         : _uid(other._uid),
           _focal_x(other._focal_x),
@@ -127,6 +199,9 @@ namespace lfs::core {
           _FoVx(other._FoVx),
           _FoVy(other._FoVy) {
         _world_view_transform = transform;
+
+        // Create CUDA stream for async image loading
+        cudaStreamCreate(&_stream);
     }
     Tensor Camera::K() const {
         // Create [1, 3, 3] zero matrix on same device as world_view_transform
@@ -156,38 +231,30 @@ namespace lfs::core {
     }
 
     Tensor Camera::load_and_get_image(int resize_factor, int max_width) {
-        unsigned char* data;
-        int w, h, c;
         auto& loader = lfs::loader::CacheLoader::getInstance();
-        // Load image synchronously
+        // Load image synchronously - returns preprocessed tensor [C,H,W] float32
         lfs::loader::LoadParams params{.resize_factor = resize_factor, .max_width = max_width};
 
-        auto result = loader.load_cached_image(_image_path, params);
+        auto image = loader.load_cached_image(_image_path, params);
 
-        data = std::get<0>(result);
-        w = std::get<1>(result);
-        h = std::get<2>(result);
-        c = std::get<3>(result);
+        // Extract dimensions from tensor shape
+        auto shape = image.shape();
+        int old_width = _image_width;
+        int old_height = _image_height;
+        _image_width = shape[2];
+        _image_height = shape[1];
 
-        _image_width = w;
-        _image_height = h;
+        LOG_DEBUG("load_and_get_image(): Tensor shape [C,H,W]=[{},{},{}], setting dimensions: {}x{} → {}x{}",
+                  shape[0], shape[1], shape[2], old_width, old_height, _image_width, _image_height);
 
-        // Create tensor from raw data [H, W, C] uint8
-        auto image = Tensor::from_blob(
-            data,
-            TensorShape({static_cast<size_t>(h), static_cast<size_t>(w), static_cast<size_t>(c)}),
-            Device::CPU,
-            DataType::UInt8);
+        // Transfer to CUDA using async stream transfer
+        image = image.to(Device::CUDA, _stream);
 
-        // Convert to float and normalize, then permute to [C, H, W]
-        image = image.to(DataType::Float32) / 255.0f;
-        image = image.permute({2, 0, 1});
-
-        // Transfer to CUDA
-        image = image.to(Device::CUDA).contiguous();
-
-        // Free the original data
-        free_image(data);
+        // Sync stream to ensure transfer completes before returning
+        // NOTE: This is necessary because the training loop needs the data immediately
+        if (_stream) {
+            cudaStreamSynchronize(_stream);
+        }
 
         return image;
     }
@@ -197,6 +264,9 @@ namespace lfs::core {
 
         int w = std::get<0>(result);
         int h = std::get<1>(result);
+
+        LOG_DEBUG("load_image_size(): Original dimensions from file: {}x{}, resize_factor={}, max_width={}",
+                  w, h, resize_factor, max_width);
 
         if (resize_factor > 0) {
             if (w % resize_factor || h % resize_factor) {
@@ -209,15 +279,26 @@ namespace lfs::core {
             _image_height = h;
         }
 
+        LOG_DEBUG("load_image_size(): After resize_factor: {}x{}", _image_width, _image_height);
+
         if (max_width > 0 && (_image_width > max_width || _image_height > max_width)) {
+            int old_width = _image_width;
+            int old_height = _image_height;
+
             if (_image_width > _image_height) {
                 _image_width = max_width;
-                _image_height = (_image_height * max_width) / _image_width;
+                _image_height = (old_height * max_width) / old_width;  // Fixed: Use old_width
+                LOG_DEBUG("load_image_size(): Resized {}x{} → {}x{} (limited by max_width={})",
+                         old_width, old_height, _image_width, _image_height, max_width);
             } else {
                 _image_height = max_width;
-                _image_width = (_image_width * max_width) / _image_height;
+                _image_width = (old_width * max_width) / old_height;  // Fixed: Use old_height
+                LOG_DEBUG("load_image_size(): Resized {}x{} → {}x{} (limited by max_width={})",
+                         old_width, old_height, _image_width, _image_height, max_width);
             }
         }
+
+        LOG_DEBUG("load_image_size(): Final dimensions: {}x{}", _image_width, _image_height);
     }
 
     size_t Camera::get_num_bytes_from_file(int resize_factor, int max_width) const {

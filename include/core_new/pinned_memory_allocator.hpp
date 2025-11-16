@@ -8,6 +8,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <cuda_runtime.h>
 
 namespace lfs::core {
 
@@ -53,9 +54,14 @@ namespace lfs::core {
          * Instead of immediately calling cudaFreeHost, the block is cached
          * for potential reuse by future allocations of similar size.
          *
+         * STREAM-AWARE: Records a CUDA event on the given stream to track when
+         * the memory is safe to reuse. The cached block will not be reused until
+         * the event signals completion.
+         *
          * @param ptr Pointer to pinned memory to free
+         * @param stream CUDA stream that last used this memory (nullptr = default stream)
          */
-        void deallocate(void* ptr);
+        void deallocate(void* ptr, cudaStream_t stream = nullptr);
 
         /**
          * @brief Clear all cached blocks and free them to the system
@@ -120,6 +126,20 @@ namespace lfs::core {
         struct Block {
             void* ptr{nullptr};
             size_t size{0};
+            cudaStream_t last_stream{nullptr}; ///< Stream that last used this memory
+            cudaEvent_t ready_event{nullptr};  ///< Event signaling when safe to reuse
+
+            Block() = default;
+
+            Block(void* p, size_t s, cudaStream_t stream = nullptr);
+
+            ~Block();
+
+            // Move-only (events can't be copied)
+            Block(Block&& other) noexcept;
+            Block& operator=(Block&& other) noexcept;
+            Block(const Block&) = delete;
+            Block& operator=(const Block&) = delete;
         };
 
         // Cache of free blocks organized by size

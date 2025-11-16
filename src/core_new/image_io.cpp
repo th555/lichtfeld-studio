@@ -7,9 +7,9 @@
 #include <OpenImageIO/imagebufalgo.h>
 #include <OpenImageIO/imageio.h>
 
+#include "core_new/logger.hpp"
 #include <algorithm>
 #include <condition_variable>
-#include <core/logger.hpp>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -55,6 +55,8 @@ namespace {
     }
 
 } // namespace
+
+namespace lfs::core {
 
 std::tuple<int, int, int> get_image_info(std::filesystem::path p) {
     init_oiio();
@@ -114,19 +116,23 @@ load_image_with_alpha(std::filesystem::path p) {
 
 std::tuple<unsigned char*, int, int, int>
 load_image(std::filesystem::path p, int res_div, int max_width) {
-    init_oiio();
+    LOG_TIMER("load_image total");
 
-    std::unique_ptr<OIIO::ImageInput> in(OIIO::ImageInput::open(p.string()));
-    if (!in)
-        throw std::runtime_error("Load failed: " + p.string() + " : " + OIIO::geterror());
+    {
+        LOG_TIMER("init_oiio");
+        init_oiio();
+    }
+
+    std::unique_ptr<OIIO::ImageInput> in;
+    {
+        LOG_TIMER("OIIO::ImageInput::open");
+        in = std::unique_ptr<OIIO::ImageInput>(OIIO::ImageInput::open(p.string()));
+        if (!in)
+            throw std::runtime_error("Load failed: " + p.string() + " : " + OIIO::geterror());
+    }
 
     const OIIO::ImageSpec& spec = in->spec();
     int w = spec.width, h = spec.height, file_c = spec.nchannels;
-
-    auto finish = [&](unsigned char* data, int W, int H, int C) {
-        in->close();
-        return std::make_tuple(data, W, H, C);
-    };
 
     // Decide threading for the resample (see notes below)
     const int nthreads = 0; // set to 1 if you call this from multiple worker threads
@@ -134,24 +140,35 @@ load_image(std::filesystem::path p, int res_div, int max_width) {
     // Fast path: read 3 channels directly (drop alpha if present)
     if (file_c >= 3) {
         if (res_div <= 1) {
+            LOG_PERF("Fast path: reading 3 channels directly");
             // allocate and read directly into final RGB buffer
-            auto* out = static_cast<unsigned char*>(std::malloc((size_t)w * h * 3));
+            auto* out = [&]() {
+                LOG_TIMER("malloc RGB buffer");
+                return static_cast<unsigned char*>(std::malloc((size_t)w * h * 3));
+            }();
             if (!out) {
                 in->close();
                 throw std::bad_alloc();
             }
 
-            if (!in->read_image(/*subimage*/ 0, /*miplevel*/ 0,
-                                /*chbegin*/ 0, /*chend*/ 3,
-                                OIIO::TypeDesc::UINT8, out)) {
-                std::string e = in->geterror();
-                std::free(out);
-                in->close();
-                throw std::runtime_error("Read failed: " + p.string() + (e.empty() ? "" : (" : " + e)));
+            {
+                LOG_TIMER("OIIO read_image");
+                if (!in->read_image(/*subimage*/ 0, /*miplevel*/ 0,
+                                    /*chbegin*/ 0, /*chend*/ 3,
+                                    OIIO::TypeDesc::UINT8, out)) {
+                    std::string e = in->geterror();
+                    std::free(out);
+                    in->close();
+                    throw std::runtime_error("Read failed: " + p.string() + (e.empty() ? "" : (" : " + e)));
+                }
             }
-            in->close();
+
+            {
+                in->close();
+            }
 
             if (max_width > 0 && (w > max_width || h > max_width)) {
+                LOG_PERF("Need downscaling: {}x{} -> max_width {}", w, h, max_width);
                 int scale_w;
                 int scale_h;
                 if (w > h) {
@@ -163,35 +180,49 @@ load_image(std::filesystem::path p, int res_div, int max_width) {
                 }
                 unsigned char* ret = nullptr;
                 try {
+                    LOG_TIMER("downscale_resample_direct");
                     ret = downscale_resample_direct(out, w, h, scale_w, scale_h, nthreads);
                 } catch (...) {
                     std::free(out);
                     throw;
                 }
                 std::free(out);
+                LOG_PERF("Downscaled to {}x{}", scale_w, scale_h);
                 return {ret, scale_w, scale_h, 3};
             } else {
                 return {out, w, h, 3};
             }
 
         } else if (res_div == 2 || res_div == 4 || res_div == 8) {
+            LOG_PERF("res_div path: res_div={}", res_div);
             // read full, then downscale in-place into a new buffer without extra copy
-            auto* full = static_cast<unsigned char*>(std::malloc((size_t)w * h * 3));
+            auto* full = [&]() {
+                LOG_TIMER("malloc full buffer for res_div");
+                return static_cast<unsigned char*>(std::malloc((size_t)w * h * 3));
+            }();
             if (!full) {
                 in->close();
                 throw std::bad_alloc();
             }
 
-            if (!in->read_image(0, 0, 0, 3, OIIO::TypeDesc::UINT8, full)) {
-                std::string e = in->geterror();
-                std::free(full);
-                in->close();
-                throw std::runtime_error("Read failed: " + p.string() + (e.empty() ? "" : (" : " + e)));
+            {
+                LOG_TIMER("OIIO read_image (res_div)");
+                if (!in->read_image(0, 0, 0, 3, OIIO::TypeDesc::UINT8, full)) {
+                    std::string e = in->geterror();
+                    std::free(full);
+                    in->close();
+                    throw std::runtime_error("Read failed: " + p.string() + (e.empty() ? "" : (" : " + e)));
+                }
             }
-            in->close();
+
+            {
+                LOG_TIMER("OIIO close (res_div)");
+                in->close();
+            }
 
             const int nw = std::max(1, w / res_div);
             const int nh = std::max(1, h / res_div);
+            LOG_PERF("Target size after res_div: {}x{}", nw, nh);
             int scale_w = nw;
             int scale_h = nh;
             if (max_width > 0 && (nw > max_width || nh > max_width)) {
@@ -206,12 +237,14 @@ load_image(std::filesystem::path p, int res_div, int max_width) {
 
             unsigned char* out = nullptr;
             try {
+                LOG_TIMER("downscale_resample_direct (res_div)");
                 out = downscale_resample_direct(full, w, h, scale_w, scale_h, nthreads);
             } catch (...) {
                 std::free(full);
                 throw;
             }
             std::free(full);
+            LOG_PERF("Final size: {}x{}", scale_w, scale_h);
             return {out, scale_w, scale_h, 3};
         } else {
             LOG_ERROR("load_image: unsupported resize factor {}", res_div);
@@ -221,35 +254,54 @@ load_image(std::filesystem::path p, int res_div, int max_width) {
 
     // 1–2 channel inputs -> read native, then expand to RGB
     {
+        LOG_PERF("Grayscale/2-channel path: file_c={}", file_c);
         const int in_c = std::min(2, std::max(1, file_c));
-        std::vector<unsigned char> tmp((size_t)w * h * in_c);
-        if (!in->read_image(0, 0, 0, in_c, OIIO::TypeDesc::UINT8, tmp.data())) {
-            auto e = in->geterror();
-            in->close();
-            throw std::runtime_error("Read failed: " + p.string() + (e.empty() ? "" : (" : " + e)));
+        std::vector<unsigned char> tmp;
+        {
+            LOG_TIMER("allocate temp buffer");
+            tmp.resize((size_t)w * h * in_c);
         }
-        in->close();
 
-        auto* base = static_cast<unsigned char*>(std::malloc((size_t)w * h * 3));
+        {
+            LOG_TIMER("OIIO read_image (grayscale)");
+            if (!in->read_image(0, 0, 0, in_c, OIIO::TypeDesc::UINT8, tmp.data())) {
+                auto e = in->geterror();
+                in->close();
+                throw std::runtime_error("Read failed: " + p.string() + (e.empty() ? "" : (" : " + e)));
+            }
+        }
+
+        {
+            LOG_TIMER("OIIO close (grayscale)");
+            in->close();
+        }
+
+        auto* base = [&]() {
+            LOG_TIMER("malloc RGB base buffer");
+            return static_cast<unsigned char*>(std::malloc((size_t)w * h * 3));
+        }();
         if (!base)
             throw std::bad_alloc();
 
-        if (in_c == 1) {
-            const unsigned char* g = tmp.data();
-            for (size_t i = 0, N = (size_t)w * h; i < N; ++i) {
-                unsigned char v = g[i];
-                base[3 * i + 0] = v;
-                base[3 * i + 1] = v;
-                base[3 * i + 2] = v;
-            }
-        } else { // 2 channels -> (R,G,avg)
-            const unsigned char* src = tmp.data();
-            for (size_t i = 0, N = (size_t)w * h; i < N; ++i) {
-                unsigned char r = src[2 * i + 0];
-                unsigned char g = src[2 * i + 1];
-                base[3 * i + 0] = r;
-                base[3 * i + 1] = g;
-                base[3 * i + 2] = (unsigned char)(((int)r + (int)g) / 2);
+        {
+            LOG_TIMER("expand to RGB");
+            if (in_c == 1) {
+                const unsigned char* g = tmp.data();
+                for (size_t i = 0, N = (size_t)w * h; i < N; ++i) {
+                    unsigned char v = g[i];
+                    base[3 * i + 0] = v;
+                    base[3 * i + 1] = v;
+                    base[3 * i + 2] = v;
+                }
+            } else { // 2 channels -> (R,G,avg)
+                const unsigned char* src = tmp.data();
+                for (size_t i = 0, N = (size_t)w * h; i < N; ++i) {
+                    unsigned char r = src[2 * i + 0];
+                    unsigned char g = src[2 * i + 1];
+                    base[3 * i + 0] = r;
+                    base[3 * i + 1] = g;
+                    base[3 * i + 2] = (unsigned char)(((int)r + (int)g) / 2);
+                }
             }
         }
 
@@ -327,20 +379,28 @@ void save_image(const std::filesystem::path& path,
     if (images.empty())
         throw std::runtime_error("No images provided");
     if (images.size() == 1) {
-        save_image(path, images[0]);
+        lfs::core::save_image(path, images[0]);
         return;
     }
 
     // Prepare all to HWC float on CPU
     std::vector<lfs::core::Tensor> xs;
     xs.reserve(images.size());
-    for (auto img : images) {
+    for (size_t idx = 0; idx < images.size(); ++idx) {
+        auto img = images[idx];
+        LOG_INFO("save_image: Input image {} shape before conversion: [{}, {}, {}]",
+                  idx, img.shape()[0], img.shape()[1], img.shape()[2]);
+
         img = img.clone().to(lfs::core::Device::CPU).to(lfs::core::DataType::Float32);
         if (img.ndim() == 4)
             img = img.squeeze(0);
         if (img.ndim() == 3 && img.shape()[0] <= 4)
             img = img.permute({1, 2, 0});
-        xs.push_back(img.contiguous());
+        img = img.contiguous();
+
+        LOG_INFO("save_image: Image {} shape after conversion to HWC: [{}, {}, {}]",
+                  idx, img.shape()[0], img.shape()[1], img.shape()[2]);
+        xs.push_back(img);
     }
 
     // Separator (white)
@@ -354,14 +414,26 @@ void save_image(const std::filesystem::path& path,
 
     // Concatenate
     lfs::core::Tensor combo = xs[0];
+    LOG_INFO("save_image: Starting combo shape: [{}, {}, {}]",
+              combo.shape()[0], combo.shape()[1], combo.shape()[2]);
+
     for (size_t i = 1; i < xs.size(); ++i) {
+        LOG_INFO("save_image: Concatenating image {} (shape [{}, {}, {}]) along axis {}",
+                  i, xs[i].shape()[0], xs[i].shape()[1], xs[i].shape()[2], horizontal ? 1 : 0);
+
         combo = (separator_width > 0)
                     ? lfs::core::Tensor::cat({combo, sep, xs[i]}, horizontal ? 1 : 0)
                     : lfs::core::Tensor::cat({combo, xs[i]}, horizontal ? 1 : 0);
+
+        LOG_INFO("save_image: After concatenation, combo shape: [{}, {}, {}]",
+                  combo.shape()[0], combo.shape()[1], combo.shape()[2]);
     }
 
+    LOG_INFO("save_image: Final combo shape before saving: [{}, {}, {}]",
+              combo.shape()[0], combo.shape()[1], combo.shape()[2]);
+
     // Save
-    save_image(path, combo);
+    lfs::core::save_image(path, combo);
 }
 
 void free_image(unsigned char* img) { std::free(img); }
@@ -433,6 +505,8 @@ bool save_img_data(const std::filesystem::path& p, const std::tuple<unsigned cha
     return success;
 }
 
+} // namespace lfs::core
+
 namespace lfs::core::image_io {
 
     BatchImageSaver::BatchImageSaver(size_t num_workers)
@@ -469,7 +543,7 @@ namespace lfs::core::image_io {
 
     void BatchImageSaver::queue_save(const std::filesystem::path& path, lfs::core::Tensor image) {
         if (!enabled_) {
-            save_image(path, image);
+            lfs::core::save_image(path, image);
             return;
         }
         SaveTask t;
@@ -479,7 +553,7 @@ namespace lfs::core::image_io {
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             if (stop_) {
-                save_image(path, image);
+                lfs::core::save_image(path, image);
                 return;
             }
             task_queue_.push(std::move(t));
@@ -493,7 +567,7 @@ namespace lfs::core::image_io {
                                               bool horizontal,
                                               int separator_width) {
         if (!enabled_) {
-            save_image(path, images, horizontal, separator_width);
+            lfs::core::save_image(path, images, horizontal, separator_width);
             return;
         }
         SaveTask t;
@@ -508,7 +582,7 @@ namespace lfs::core::image_io {
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             if (stop_) {
-                save_image(path, images, horizontal, separator_width);
+                lfs::core::save_image(path, images, horizontal, separator_width);
                 return;
             }
             task_queue_.push(std::move(t));
@@ -552,9 +626,9 @@ namespace lfs::core::image_io {
     void BatchImageSaver::process_task(const SaveTask& t) {
         try {
             if (t.is_multi) {
-                save_image(t.path, t.images, t.horizontal, t.separator_width);
+                lfs::core::save_image(t.path, t.images, t.horizontal, t.separator_width);
             } else {
-                save_image(t.path, t.image);
+                lfs::core::save_image(t.path, t.image);
             }
         } catch (const std::exception& e) {
             LOG_ERROR("[BatchImageSaver] Error saving {}: {}", t.path.string(), e.what());

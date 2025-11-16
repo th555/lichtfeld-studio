@@ -215,7 +215,7 @@ namespace lfs::core::tensor_ops {
     void launch_randint(int* data, size_t n, int low, int high,
                         unsigned long long seed, cudaStream_t stream);
 
-    void launch_multinomial(const float* weights, int* samples,
+    void launch_multinomial(const float* weights, int64_t* samples,
                             unsigned long n, unsigned long num_samples, bool replacement,
                             unsigned long long seed, cudaStream_t stream);
 
@@ -252,7 +252,20 @@ namespace lfs::core::tensor_ops {
                              const size_t* shape, size_t rank, int dim,
                              size_t index_size, int boundary_mode, cudaStream_t stream);
 
+    void launch_index_select(const int64_t* input, const int* indices, int64_t* output,
+                             const size_t* shape, size_t rank, int dim,
+                             size_t index_size, int boundary_mode, cudaStream_t stream);
+
+    void launch_index_select(const int32_t* input, const int* indices, int32_t* output,
+                             const size_t* shape, size_t rank, int dim,
+                             size_t index_size, int boundary_mode, cudaStream_t stream);
+
     void launch_gather(const float* input, const int* indices, float* output,
+                       const size_t* input_shape, const size_t* index_shape,
+                       size_t rank, int dim, size_t total_elements,
+                       int boundary_mode, cudaStream_t stream);
+
+    void launch_gather(const int64_t* input, const int* indices, int64_t* output,
                        const size_t* input_shape, const size_t* index_shape,
                        size_t rank, int dim, size_t total_elements,
                        int boundary_mode, cudaStream_t stream);
@@ -302,11 +315,11 @@ namespace lfs::core::tensor_ops {
     void launch_index_put(float* data, const int* indices, const float* values,
                           size_t data_size, size_t index_size, cudaStream_t stream);
 
-    void launch_nonzero(const float* data, int64_t* indices,
-                        size_t n, size_t output_size, cudaStream_t stream);
+    size_t launch_nonzero(const float* data, int64_t* indices,
+                          size_t n, size_t output_size, cudaStream_t stream);
 
-    void launch_nonzero_bool(const unsigned char* data, int64_t* indices,
-                             size_t n, size_t output_size, cudaStream_t stream);
+    size_t launch_nonzero_bool(const unsigned char* data, int64_t* indices,
+                               size_t n, size_t output_size, cudaStream_t stream);
 
     // ============= Cumulative Sum Operation =============
     void launch_cumsum(void* data, const size_t* shape, size_t rank,
@@ -352,6 +365,18 @@ namespace lfs::core::tensor_ops {
         size_t rank,
         size_t total_elements,
         DataType dtype,
+        cudaStream_t stream = nullptr);
+
+    // ============= Strided Fill Operations =============
+    // Fill non-contiguous tensors with a constant value (respects strides)
+    template <typename T>
+    void launch_fill_strided(
+        T* data,
+        T value,
+        const std::vector<size_t>& shape,
+        const std::vector<size_t>& strides,
+        size_t storage_offset,
+        size_t n,
         cudaStream_t stream = nullptr);
 
 } // namespace lfs::core::tensor_ops

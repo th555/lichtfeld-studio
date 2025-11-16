@@ -344,13 +344,14 @@ namespace lfs::core::tensor_ops {
             const float* segment_start = input + seg_idx * segment_size;
 
             // Sequential reduction of small segment
-            float sum = 0.0f;
+            // Use double accumulation to avoid FP32 precision loss
+            double sum = 0.0;
 #pragma unroll 8
             for (size_t i = 0; i < segment_size; ++i) {
-                sum += segment_start[i];
+                sum += (double)segment_start[i];
             }
 
-            output[seg_idx] = sum;
+            output[seg_idx] = (float)sum;
         }
     }
 
@@ -503,7 +504,8 @@ namespace lfs::core::tensor_ops {
             size_t inner_idx = out_idx % inner_size;
 
             // Accumulate across the reduce dimension with strided access
-            float sum = 0.0f;
+            // Use double accumulation to avoid FP32 precision loss
+            double sum = 0.0;
             size_t base_idx = outer_idx * reduce_size * inner_size + inner_idx;
 
             // OPTIMIZATION: Unroll 8× for better ILP (Instruction Level Parallelism)
@@ -521,24 +523,19 @@ namespace lfs::core::tensor_ops {
                     float v6 = input[base_idx + (r + 6) * inner_size];
                     float v7 = input[base_idx + (r + 7) * inner_size];
 
-                    // Balanced tree reduction (minimize FP errors)
-                    float s01 = v0 + v1;
-                    float s23 = v2 + v3;
-                    float s45 = v4 + v5;
-                    float s67 = v6 + v7;
-                    float s0123 = s01 + s23;
-                    float s4567 = s45 + s67;
-                    sum += s0123 + s4567;
+                    // Accumulate in double precision
+                    sum += (double)v0 + (double)v1 + (double)v2 + (double)v3 +
+                           (double)v4 + (double)v5 + (double)v6 + (double)v7;
                 }
             }
 
 // Handle remainder (< 8 elements)
 #pragma unroll 4
             for (; r < reduce_size; ++r) {
-                sum += input[base_idx + r * inner_size];
+                sum += (double)input[base_idx + r * inner_size];
             }
 
-            output[out_idx] = sum;
+            output[out_idx] = (float)sum;
         }
     }
 
@@ -697,8 +694,7 @@ namespace lfs::core::tensor_ops {
         const auto& gpu = GPUConfig::get();
         int grid_size = gpu.optimal_grid_size(BLOCK_SIZE);
 
-        // Cap grid size for efficiency (llm.c pattern)
-        grid_size = min(grid_size, 2048);
+        // No cap needed - two-stage reduction handles any size efficiently
 
         // Allocate partial buffer using stream-ordered allocation (CUDA 12.8+)
         float* partial = partial_buffer;
@@ -769,7 +765,7 @@ namespace lfs::core::tensor_ops {
         constexpr int BLOCK_SIZE = 256;
         int num_vec_elements = (n + 3) / 4;
         int grid_size = (num_vec_elements + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        grid_size = min(grid_size, 2048);
+        // No cap - single-stage warp reduce handles any size
 
         switch (op) {
         case ReduceOp::Sum:
@@ -825,7 +821,7 @@ namespace lfs::core::tensor_ops {
         if (segment_size < 32) {
             constexpr int BLOCK_SIZE = 256;
             int grid_size = (num_segments + BLOCK_SIZE - 1) / BLOCK_SIZE;
-            grid_size = min(grid_size, 2048); // Cap at 2048 blocks
+            // No cap - each thread handles one segment
 
             switch (op) {
             case ReduceOp::Sum:
@@ -850,7 +846,7 @@ namespace lfs::core::tensor_ops {
         // Standard case: Medium segments (32-500K elements)
         // Use grid-stride loop: Each block processes multiple segments
         constexpr int BLOCK_SIZE = 256;
-        int grid_size = min((int)num_segments, 2048); // Cap at 2048 blocks for efficiency
+        int grid_size = num_segments; // One block per segment (or less if very many)
 
         switch (op) {
         case ReduceOp::Sum:
@@ -898,10 +894,10 @@ namespace lfs::core::tensor_ops {
 
         size_t output_elements = outer_size * inner_size;
 
-        // Optimal configuration: 256 threads per block, cap grid size
+        // Optimal configuration: 256 threads per block
         constexpr int BLOCK_SIZE = 256;
         int grid_size = (output_elements + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        grid_size = min(grid_size, 2048);
+        // No cap - warp-level reduction scales well
 
         switch (op) {
         case ReduceOp::Sum:

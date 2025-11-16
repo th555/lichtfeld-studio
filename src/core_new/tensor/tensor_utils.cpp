@@ -61,8 +61,8 @@ namespace lfs::core {
         auto result = Tensor::zeros({n, n}, diagonal.device());
 
         if (diagonal.device() == Device::CUDA) {
-            tensor_ops::launch_diag(diagonal.ptr<float>(), result.ptr<float>(), n, 0);
-            CHECK_CUDA(cudaDeviceSynchronize());
+            tensor_ops::launch_diag(diagonal.ptr<float>(), result.ptr<float>(), n, result.stream());
+            // No sync - returns tensor
         } else {
             const float* diag_data = diagonal.ptr<float>();
             float* mat_data = result.ptr<float>();

@@ -241,7 +241,7 @@ namespace gs {
         // Transfer to CUDA and permute to [C, H, W]
         image = image.cuda().permute({2, 0, 1}).contiguous();
 
-        LOG_DEBUG("Loaded image: {}x{}x{} from {}", c, h, w, image_path_.filename().string());
+        //LOG_DEBUG("Loaded image: {}x{}x{} from {}", c, h, w, image_path_.filename().string());
 
         return image;
     }

@@ -387,9 +387,6 @@ namespace lfs::core::tensor_ops {
         cub::DeviceScan::ExclusiveSum(temp_storage.get(), temp_bytes,
                                       mask, scan_result.get(), n, stream);
 
-        if (stream != 0)
-            cudaStreamSynchronize(stream);
-
         int blocks = (n + 255) / 256;
         masked_scatter_compact_kernel<<<blocks, 256, 0, stream>>>(
             data, mask, src, scan_result.get(), n);
@@ -399,7 +396,9 @@ namespace lfs::core::tensor_ops {
     __global__ void where_kernel(const unsigned char* cond, const float* x, const float* y,
                                  float* r, const size_t* shapes,
                                  size_t cr, size_t xr, size_t yr, size_t rr, size_t n) {
-        size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+        // Support both 1D and 2D grids for large arrays
+        size_t block_id = blockIdx.y * gridDim.x + blockIdx.x;
+        size_t idx = block_id * blockDim.x + threadIdx.x;
         if (idx >= n)
             return;
 
@@ -424,8 +423,19 @@ namespace lfs::core::tensor_ops {
         std::copy(r_shape, r_shape + r_rank, h_shapes + 30);
         shapes.copy_from_host(h_shapes, 40);
 
-        where_kernel<<<(total + 255) / 256, 256, 0, stream>>>(
-            cond, x, y, r, shapes.get(), cond_rank, x_rank, y_rank, r_rank, total);
+        // Use 2D grid for large arrays to avoid exceeding grid dimension limits
+        size_t num_blocks = (total + 255) / 256;
+        const size_t max_blocks_x = 65535;
+
+        if (num_blocks <= max_blocks_x) {
+            where_kernel<<<num_blocks, 256, 0, stream>>>(
+                cond, x, y, r, shapes.get(), cond_rank, x_rank, y_rank, r_rank, total);
+        } else {
+            dim3 grid(std::min(num_blocks, max_blocks_x),
+                      (num_blocks + max_blocks_x - 1) / max_blocks_x);
+            where_kernel<<<grid, 256, 0, stream>>>(
+                cond, x, y, r, shapes.get(), cond_rank, x_rank, y_rank, r_rank, total);
+        }
     }
 
     // ============= Count Nonzero =============
@@ -442,13 +452,9 @@ namespace lfs::core::tensor_ops {
                                          data_ptr, data_ptr + n,
                                          ops::is_nonzero_bool_op());
 
-        // Then write to device memory
-        cudaMemcpyAsync(count, &result, sizeof(size_t), cudaMemcpyHostToDevice, stream);
-
-        // Ensure the copy completes before we return (and potentially destroy 'result')
-        if (stream) {
-            cudaStreamSynchronize(stream);
-        }
+        // Write to device memory (use sync copy since result is stack variable)
+        // OPTIMIZATION: cudaMemcpy (blocking) is more efficient than cudaMemcpyAsync + cudaStreamSynchronize
+        cudaMemcpy(count, &result, sizeof(size_t), cudaMemcpyHostToDevice);
     }
 
     void launch_count_nonzero_float(const float* data, size_t* count, size_t n, cudaStream_t stream) {
@@ -465,19 +471,20 @@ namespace lfs::core::tensor_ops {
                                          ops::is_nonzero_op<float>());
 
         // Then write to device memory
-        cudaMemcpyAsync(count, &result, sizeof(size_t), cudaMemcpyHostToDevice, stream);
-
-        // Ensure the copy completes before we return (and potentially destroy 'result')
-        if (stream) {
-            cudaStreamSynchronize(stream);
-        }
+        // Write to device memory (use sync copy since result is stack variable)
+        // OPTIMIZATION: cudaMemcpy (blocking) is more efficient than cudaMemcpyAsync + cudaStreamSynchronize
+        cudaMemcpy(count, &result, sizeof(size_t), cudaMemcpyHostToDevice);
     }
 
     // ============= Index Operations =============
-    __global__ void index_select_kernel(const float* in, const int* idx, float* out,
+    // Templated kernel to support multiple data types (float, int64_t, etc.)
+    template<typename T>
+    __global__ void index_select_kernel(const T* in, const int* idx, T* out,
                                         size_t outer, size_t dim_size, size_t inner,
                                         size_t idx_size, int boundary) {
-        size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+        // Support both 1D and 2D grids for large arrays
+        size_t block_id = blockIdx.y * gridDim.x + blockIdx.x;
+        size_t tid = block_id * blockDim.x + threadIdx.x;
         size_t total = outer * idx_size * inner;
         if (tid >= total)
             return;
@@ -499,20 +506,118 @@ namespace lfs::core::tensor_ops {
         out[tid] = in[o * dim_size * inner + sel * inner + j];
     }
 
+    // Float32 overload
     void launch_index_select(const float* in, const int* idx, float* out,
                              const size_t* shape, size_t rank, int dim,
                              size_t idx_size, int boundary, cudaStream_t stream) {
+        // Handle empty indices case - no kernel launch needed
+        if (idx_size == 0) {
+            return;
+        }
+
         size_t outer = 1, inner = 1;
         for (int i = 0; i < dim; ++i)
             outer *= shape[i];
         for (size_t i = dim + 1; i < rank; ++i)
             inner *= shape[i];
         size_t total = outer * idx_size * inner;
-        index_select_kernel<<<(total + 255) / 256, 256, 0, stream>>>(
-            in, idx, out, outer, shape[dim], inner, idx_size, boundary);
+
+        // Early return if no work to do
+        if (total == 0) {
+            return;
+        }
+
+        // Use 2D grid for large arrays to avoid exceeding grid dimension limits
+        size_t num_blocks = (total + 255) / 256;
+        const size_t max_blocks_x = 65535;  // Safe limit for all CUDA devices
+
+        if (num_blocks <= max_blocks_x) {
+            index_select_kernel<float><<<num_blocks, 256, 0, stream>>>(
+                in, idx, out, outer, shape[dim], inner, idx_size, boundary);
+        } else {
+            // Use 2D grid: gridDim.x = min(num_blocks, max), gridDim.y = ceil(num_blocks / max)
+            dim3 grid(std::min(num_blocks, max_blocks_x),
+                      (num_blocks + max_blocks_x - 1) / max_blocks_x);
+            index_select_kernel<float><<<grid, 256, 0, stream>>>(
+                in, idx, out, outer, shape[dim], inner, idx_size, boundary);
+        }
     }
 
-    __global__ void gather_kernel(const float* in, const int* idx, float* out,
+    // Int64 overload
+    void launch_index_select(const int64_t* in, const int* idx, int64_t* out,
+                             const size_t* shape, size_t rank, int dim,
+                             size_t idx_size, int boundary, cudaStream_t stream) {
+        // Handle empty indices case - no kernel launch needed
+        if (idx_size == 0) {
+            return;
+        }
+
+        size_t outer = 1, inner = 1;
+        for (int i = 0; i < dim; ++i)
+            outer *= shape[i];
+        for (size_t i = dim + 1; i < rank; ++i)
+            inner *= shape[i];
+        size_t total = outer * idx_size * inner;
+
+        // Early return if no work to do
+        if (total == 0) {
+            return;
+        }
+
+        // Use 2D grid for large arrays to avoid exceeding grid dimension limits
+        size_t num_blocks = (total + 255) / 256;
+        const size_t max_blocks_x = 65535;  // Safe limit for all CUDA devices
+
+        if (num_blocks <= max_blocks_x) {
+            index_select_kernel<int64_t><<<num_blocks, 256, 0, stream>>>(
+                in, idx, out, outer, shape[dim], inner, idx_size, boundary);
+        } else {
+            // Use 2D grid
+            dim3 grid(std::min(num_blocks, max_blocks_x),
+                      (num_blocks + max_blocks_x - 1) / max_blocks_x);
+            index_select_kernel<int64_t><<<grid, 256, 0, stream>>>(
+                in, idx, out, outer, shape[dim], inner, idx_size, boundary);
+        }
+    }
+
+    // Int32 overload
+    void launch_index_select(const int32_t* in, const int* idx, int32_t* out,
+                             const size_t* shape, size_t rank, int dim,
+                             size_t idx_size, int boundary, cudaStream_t stream) {
+        if (idx_size == 0) {
+            return;
+        }
+
+        size_t outer = 1, inner = 1;
+        for (int i = 0; i < dim; ++i)
+            outer *= shape[i];
+        for (size_t i = dim + 1; i < rank; ++i)
+            inner *= shape[i];
+        size_t total = outer * idx_size * inner;
+
+        // Early return if no work to do
+        if (total == 0) {
+            return;
+        }
+
+        // Use 2D grid for large arrays to avoid exceeding grid dimension limits
+        size_t num_blocks = (total + 255) / 256;
+        const size_t max_blocks_x = 65535;  // Safe limit for all CUDA devices
+
+        if (num_blocks <= max_blocks_x) {
+            index_select_kernel<int32_t><<<num_blocks, 256, 0, stream>>>(
+                in, idx, out, outer, shape[dim], inner, idx_size, boundary);
+        } else {
+            // Use 2D grid
+            dim3 grid(std::min(num_blocks, max_blocks_x),
+                      (num_blocks + max_blocks_x - 1) / max_blocks_x);
+            index_select_kernel<int32_t><<<grid, 256, 0, stream>>>(
+                in, idx, out, outer, shape[dim], inner, idx_size, boundary);
+        }
+    }
+
+    template<typename T>
+    __global__ void gather_kernel(const T* in, const int* idx, T* out,
                                   const size_t* in_shape, const size_t* idx_shape,
                                   size_t in_rank, size_t idx_rank, int dim, size_t total, int boundary) {
         size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -615,7 +720,56 @@ namespace lfs::core::tensor_ops {
         d_idx_shape.copy_from_host(h_idx_shape, 10);
 
         int blocks = (total + 255) / 256;
-        gather_kernel<<<blocks, 256, 0, stream>>>(
+        gather_kernel<float><<<blocks, 256, 0, stream>>>(
+            in, idx, out, d_in_shape.get(), d_idx_shape.get(),
+            rank, idx_rank, dim, total, boundary);
+    }
+
+    void launch_gather(const int64_t* in, const int* idx, int64_t* out,
+                       const size_t* in_shape, const size_t* idx_shape,
+                       size_t rank, int dim, size_t total, int boundary, cudaStream_t stream) {
+        CudaDeviceMemory<size_t> d_in_shape(10);
+        CudaDeviceMemory<size_t> d_idx_shape(10);
+
+        size_t h_in_shape[10] = {0};
+        size_t h_idx_shape[10] = {0};
+
+        size_t idx_rank = rank;
+        size_t idx_elements = 1;
+        for (size_t i = 0; i < rank; ++i) {
+            if (idx_shape[i] > 0) {
+                h_idx_shape[i] = idx_shape[i];
+                idx_elements *= idx_shape[i];
+            } else {
+                break;
+            }
+        }
+
+        idx_rank = 0;
+        size_t check_elements = 1;
+        for (size_t i = 0; i < 10; ++i) {
+            if (idx_shape[i] > 0) {
+                check_elements *= idx_shape[i];
+                idx_rank++;
+                if (check_elements == total)
+                    break;
+            } else {
+                break;
+            }
+        }
+
+        if (idx_rank == 0)
+            idx_rank = 1;
+
+        for (size_t i = 0; i < rank; ++i) {
+            h_in_shape[i] = in_shape[i];
+        }
+
+        d_in_shape.copy_from_host(h_in_shape, 10);
+        d_idx_shape.copy_from_host(h_idx_shape, 10);
+
+        int blocks = (total + 255) / 256;
+        gather_kernel<int64_t><<<blocks, 256, 0, stream>>>(
             in, idx, out, d_in_shape.get(), d_idx_shape.get(),
             rank, idx_rank, dim, total, boundary);
     }
@@ -659,7 +813,9 @@ namespace lfs::core::tensor_ops {
     __global__ void scatter_kernel(float* out, const int* idx, const float* in,
                                    size_t outer, size_t dim_sz, size_t inner,
                                    size_t idx_sz, int mode) {
-        size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+        // Support both 1D and 2D grids for large arrays
+        size_t block_id = blockIdx.y * gridDim.x + blockIdx.x;
+        size_t tid = block_id * blockDim.x + threadIdx.x;
         size_t n = outer * idx_sz * inner;
         if (tid >= n)
             return;
@@ -689,8 +845,20 @@ namespace lfs::core::tensor_ops {
             outer *= out_shape[i];
         for (size_t i = dim + 1; i < rank; ++i)
             inner *= out_shape[i];
-        scatter_kernel<<<(total + 255) / 256, 256, 0, stream>>>(
-            out, idx, in, outer, out_shape[dim], inner, in_shape[dim], mode);
+
+        // Use 2D grid for large arrays to avoid exceeding grid dimension limits
+        size_t num_blocks = (total + 255) / 256;
+        const size_t max_blocks_x = 65535;
+
+        if (num_blocks <= max_blocks_x) {
+            scatter_kernel<<<num_blocks, 256, 0, stream>>>(
+                out, idx, in, outer, out_shape[dim], inner, in_shape[dim], mode);
+        } else {
+            dim3 grid(std::min(num_blocks, max_blocks_x),
+                      (num_blocks + max_blocks_x - 1) / max_blocks_x);
+            scatter_kernel<<<grid, 256, 0, stream>>>(
+                out, idx, in, outer, out_shape[dim], inner, in_shape[dim], mode);
+        }
     }
 
     void launch_index_fill(float* data, const int* idx, float val,
@@ -736,24 +904,29 @@ namespace lfs::core::tensor_ops {
     }
 
     // ============= Nonzero Operations =============
-    void launch_nonzero(const float* data, int64_t* indices, size_t n, size_t output_size, cudaStream_t stream) {
+
+    size_t launch_nonzero(const float* data, int64_t* indices, size_t n, size_t output_size, cudaStream_t stream) {
         if (n == 0 || output_size == 0)
-            return;
+            return 0;
         auto data_ptr = thrust::device_pointer_cast(data);
         auto indices_ptr = thrust::device_pointer_cast(indices);
         auto counting = thrust::counting_iterator<int64_t>(0);
-        thrust::copy_if(thrust::cuda::par.on(stream), counting, counting + n, data_ptr,
-                        indices_ptr, ops::nonzero_predicate<float>());
+        auto end_it = thrust::copy_if(thrust::cuda::par.on(stream), counting, counting + n, data_ptr,
+                                      indices_ptr, ops::nonzero_predicate<float>());
+        // Return actual count (fixes potential mismatch)
+        return end_it - indices_ptr;
     }
 
-    void launch_nonzero_bool(const unsigned char* data, int64_t* indices, size_t n, size_t output_size, cudaStream_t stream) {
+    size_t launch_nonzero_bool(const unsigned char* data, int64_t* indices, size_t n, size_t output_size, cudaStream_t stream) {
         if (n == 0 || output_size == 0)
-            return;
+            return 0;
         auto data_ptr = thrust::device_pointer_cast(data);
         auto indices_ptr = thrust::device_pointer_cast(indices);
         auto counting = thrust::counting_iterator<int64_t>(0);
-        thrust::copy_if(thrust::cuda::par.on(stream), counting, counting + n, data_ptr,
-                        indices_ptr, ops::nonzero_bool_predicate());
+        auto end_it = thrust::copy_if(thrust::cuda::par.on(stream), counting, counting + n, data_ptr,
+                                      indices_ptr, ops::nonzero_bool_predicate());
+        // Return actual count (fixes potential mismatch)
+        return end_it - indices_ptr;
     }
 
     // ============= Multi-Tensor Gather (Zip Gather) =============

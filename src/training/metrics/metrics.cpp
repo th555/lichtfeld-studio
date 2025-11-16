@@ -7,34 +7,14 @@
 #include "core/splat_data.hpp"
 #include "rasterization/fast_rasterizer.hpp"
 #include "rasterization/rasterizer.hpp"
+#include "kernels/ssim.cuh"
 #include <chrono>
 #include <cmath>
 #include <iostream>
 #include <numeric>
 
 namespace gs::training {
-    // 1D Gaussian kernel
-    torch::Tensor gaussian(const int window_size, const float sigma) {
-        TORCH_CHECK(window_size % 2 == 1, "Window size must be odd.");
-        torch::Tensor gauss = torch::empty({window_size}, torch::kFloat32);
-
-        const int centre = window_size / 2;
-        const float inv_denom = 1.0f / 2.0f * sigma * sigma;
-
-        for (int x = 0; x < window_size; x++) {
-            const int dist_i = x - centre;
-            const float dist_sq = static_cast<float>(dist_i * dist_i);
-            gauss[x] = std::exp(-dist_sq * inv_denom);
-        }
-
-        return gauss / gauss.sum();
-    }
-
-    torch::Tensor create_window(const int window_size, const int channel) {
-        const auto _1D_window = gaussian(window_size, 1.5).unsqueeze(1);
-        const auto _2D_window = _1D_window.mm(_1D_window.t()).unsqueeze(0).unsqueeze(0);
-        return _2D_window.expand({channel, 1, window_size, window_size}).contiguous();
-    }
+    // SSIM now uses kernel-based implementation to match NEW
 
     // PSNR Implementation
     float PSNR::compute(const torch::Tensor& pred, const torch::Tensor& target) const {
@@ -58,11 +38,10 @@ namespace gs::training {
         return (20.f * torch::log10(data_range_ / mse_val.sqrt())).mean().item<float>();
     }
 
-    // SSIM Implementation
+    // SSIM Implementation (using kernel-based implementation to match NEW)
     SSIM::SSIM(const int window_size, const int channel)
         : window_size_(window_size),
           channel_(channel) {
-        window_ = create_window(window_size, channel).to(torch::kFloat32);
     }
 
     float SSIM::compute(const torch::Tensor& pred, const torch::Tensor& target) {
@@ -70,49 +49,11 @@ namespace gs::training {
         TORCH_CHECK(pred.sizes() == target.sizes(),
                     "Prediction and target must have the same shape");
 
-        // Ensure window is on the same device as input
-        if (window_.device() != pred.device()) {
-            window_ = window_.to(pred.device());
-        }
+        // Use kernel-based SSIM implementation (same as NEW)
+        // apply_valid_padding = true to match NEW's default behavior
+        auto [ssim_value, ctx] = ssim_forward(pred, target, true);
 
-        const int pad = window_size_ / 2;
-
-        // Compute local means
-        const auto mu1 = torch::nn::functional::conv2d(pred, window_,
-                                                       torch::nn::functional::Conv2dFuncOptions()
-                                                           .padding(pad)
-                                                           .groups(channel_));
-        const auto mu2 = torch::nn::functional::conv2d(target, window_,
-                                                       torch::nn::functional::Conv2dFuncOptions()
-                                                           .padding(pad)
-                                                           .groups(channel_));
-
-        const auto mu1_sq = mu1.pow(2);
-        const auto mu2_sq = mu2.pow(2);
-        const auto mu1_mu2 = mu1 * mu2;
-
-        // Compute local variances and covariance
-        const auto sigma1_sq = torch::nn::functional::conv2d(pred * pred, window_,
-                                                             torch::nn::functional::Conv2dFuncOptions()
-                                                                 .padding(pad)
-                                                                 .groups(channel_)) -
-                               mu1_sq;
-        const auto sigma2_sq = torch::nn::functional::conv2d(target * target, window_,
-                                                             torch::nn::functional::Conv2dFuncOptions()
-                                                                 .padding(pad)
-                                                                 .groups(channel_)) -
-                               mu2_sq;
-        const auto sigma12 = torch::nn::functional::conv2d(pred * target, window_,
-                                                           torch::nn::functional::Conv2dFuncOptions()
-                                                               .padding(pad)
-                                                               .groups(channel_)) -
-                             mu1_mu2;
-
-        // SSIM formula
-        const auto ssim_map = ((2.f * mu1_mu2 + C1) * (2.f * sigma12 + C2)) /
-                              ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2));
-
-        return ssim_map.mean().item<float>();
+        return ssim_value;
     }
 
     // LPIPS Implementation
@@ -333,7 +274,7 @@ namespace gs::training {
         TORCH_CHECK(depth_normalized.dim() == 2, "Expected 2D tensor for depth_normalized");
 
         // Create output tensor [3, H, W] for RGB
-        auto colormap = torch::zeros({3, depth_normalized.size(0), depth_normalized.size(1)},
+        auto colormap = torch::zeros({(3), (depth_normalized.size(0)), (depth_normalized.size(1))},
                                      torch::TensorOptions().dtype(torch::kFloat32).device(depth_normalized.device()));
 
         // Get individual channel views

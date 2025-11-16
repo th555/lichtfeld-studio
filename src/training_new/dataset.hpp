@@ -5,897 +5,519 @@
 #pragma once
 
 #include "core_new/camera.hpp"
-#include "core_new/image_io.hpp"
-#include "core_new/logger.hpp"
-#include "core_new/parameters.hpp"
-#include "core_new/splat_data.hpp"
 #include "core_new/tensor.hpp"
-#include "loader_new/loader.hpp"
-#include <atomic>
+#include <algorithm>
+#include <chrono>
 #include <condition_variable>
-#include <cuda_runtime.h>
-#include <expected>
 #include <format>
-#include <future>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <queue>
 #include <random>
+#include <string>
 #include <thread>
 #include <vector>
 
 namespace lfs::training {
 
-    // Simple CUDA image buffer - no torch dependency
-    class CUDAImageBuffer {
-    private:
-        float* data_ = nullptr;
-        size_t width_ = 0;
-        size_t height_ = 0;
-        size_t channels_ = 3;
-        bool allocated_ = false;
+// ============================================================================
+// Thread-Safe Queue (MPMC)
+// ============================================================================
 
-    public:
-        CUDAImageBuffer() = default;
-
-        ~CUDAImageBuffer() {
-            if (data_) {
-                cudaFree(data_);
-            }
-        }
-
-        // Move only
-        CUDAImageBuffer(const CUDAImageBuffer&) = delete;
-        CUDAImageBuffer& operator=(const CUDAImageBuffer&) = delete;
-
-        CUDAImageBuffer(CUDAImageBuffer&& other) noexcept
-            : data_(other.data_),
-              width_(other.width_),
-              height_(other.height_),
-              channels_(other.channels_),
-              allocated_(other.allocated_) {
-            other.data_ = nullptr;
-            other.allocated_ = false;
-        }
-
-        CUDAImageBuffer& operator=(CUDAImageBuffer&& other) noexcept {
-            if (this != &other) {
-                if (data_)
-                    cudaFree(data_);
-                data_ = other.data_;
-                width_ = other.width_;
-                height_ = other.height_;
-                channels_ = other.channels_;
-                allocated_ = other.allocated_;
-                other.data_ = nullptr;
-                other.allocated_ = false;
-            }
-            return *this;
-        }
-
-        // Allocate or reallocate if size changes
-        void ensure_size(size_t w, size_t h, size_t c = 3) {
-            size_t required_size = w * h * c;
-            size_t current_size = width_ * height_ * channels_;
-
-            if (!allocated_ || required_size != current_size) {
-                if (data_) {
-                    cudaFree(data_);
-                }
-
-                cudaMalloc(&data_, required_size * sizeof(float));
-                width_ = w;
-                height_ = h;
-                channels_ = c;
-                allocated_ = true;
-            }
-        }
-
-        // Load image from file directly to this buffer
-        void load_from_file(const std::filesystem::path& path, int resize_factor) {
-            // Load image using existing image_io
-            unsigned char* cpu_data;
-            int w, h, c;
-            std::tie(cpu_data, w, h, c) = load_image(path, resize_factor);
-
-            // Ensure buffer is right size
-            ensure_size(w, h, c);
-
-            // Convert to float and upload to GPU in one step
-            // Create temporary float buffer on CPU
-            std::vector<float> float_buffer(w * h * c);
-
-            // Convert uint8 to float in CHW format (channels first)
-            for (int y = 0; y < h; ++y) {
-                for (int x = 0; x < w; ++x) {
-                    for (int ch = 0; ch < c; ++ch) {
-                        size_t src_idx = (y * w + x) * c + ch;
-                        size_t dst_idx = ch * h * w + y * w + x;
-                        float_buffer[dst_idx] = cpu_data[src_idx] / 255.0f;
-                    }
-                }
-            }
-
-            // Copy to GPU
-            cudaMemcpy(data_, float_buffer.data(),
-                       float_buffer.size() * sizeof(float),
-                       cudaMemcpyHostToDevice);
-
-            // Free CPU image
-            free_image(cpu_data);
-        }
-
-        float* data() { return data_; }
-        const float* data() const { return data_; }
-        size_t width() const { return width_; }
-        size_t height() const { return height_; }
-        size_t channels() const { return channels_; }
-    };
-
-    // Image buffer pool for reusing memory
-    class ImageBufferPool {
-    private:
-        std::vector<std::unique_ptr<CUDAImageBuffer>> buffers_;
-        std::queue<CUDAImageBuffer*> available_;
-        mutable std::mutex mutex_;
-        size_t total_buffers_ = 0;
-
-    public:
-        explicit ImageBufferPool(size_t initial_size = 8) {
-            for (size_t i = 0; i < initial_size; ++i) {
-                auto buffer = std::make_unique<CUDAImageBuffer>();
-                available_.push(buffer.get());
-                buffers_.push_back(std::move(buffer));
-            }
-            total_buffers_ = initial_size;
-        }
-
-        CUDAImageBuffer* acquire() {
+/// A basic locked, blocking MPMC queue.
+/// Every push/pop is guarded by a mutex. Condition variable is used
+/// to communicate insertion of new elements for waiting threads.
+template <typename T>
+class ThreadSafeQueue {
+public:
+    /// Push a new value to the back and notify one waiting thread
+    void push(T value) {
+        {
             std::lock_guard<std::mutex> lock(mutex_);
+            queue_.push(std::move(value));
+        }
+        cv_.notify_one();
+    }
 
-            if (available_.empty()) {
-                // Create new buffer if pool is exhausted
-                auto buffer = std::make_unique<CUDAImageBuffer>();
-                CUDAImageBuffer* ptr = buffer.get();
-                buffers_.push_back(std::move(buffer));
-                total_buffers_++;
-                LOG_DEBUG("ImageBufferPool expanded to {} buffers", total_buffers_);
-                return ptr;
+    /// Pop front element, blocking until available or timeout
+    /// Returns nullopt on timeout
+    std::optional<T> pop(std::optional<std::chrono::milliseconds> timeout = std::nullopt) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (timeout) {
+            if (!cv_.wait_for(lock, *timeout, [this] { return !queue_.empty(); })) {
+                return std::nullopt; // Timeout
             }
-
-            CUDAImageBuffer* buffer = available_.front();
-            available_.pop();
-            return buffer;
+        } else {
+            cv_.wait(lock, [this] { return !queue_.empty(); });
         }
 
-        void release(CUDAImageBuffer* buffer) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            available_.push(buffer);
+        T value = std::move(queue_.front());
+        queue_.pop();
+        return value;
+    }
+
+    /// Empty the queue and return number of elements cleared
+    size_t clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto size = queue_.size();
+        while (!queue_.empty()) {
+            queue_.pop();
+        }
+        return size;
+    }
+
+    /// Check if empty (not thread-safe by itself, just a snapshot)
+    bool empty() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return queue_.empty();
+    }
+
+private:
+    std::queue<T> queue_;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+};
+
+// ============================================================================
+// Random Sampler
+// ============================================================================
+
+/// Random sampler that shuffles indices once and iterates through them
+class RandomSampler {
+public:
+    explicit RandomSampler(size_t size) : size_(size), index_(0) {
+        reset();
+    }
+
+    /// Reset and shuffle indices
+    void reset(std::optional<size_t> new_size = std::nullopt) {
+        if (new_size) {
+            size_ = *new_size;
         }
 
-        size_t size() const {
-            std::lock_guard<std::mutex> lock(mutex_);
-            return total_buffers_;
+        // Generate indices 0...size-1
+        indices_.resize(size_);
+        for (size_t i = 0; i < size_; ++i) {
+            indices_[i] = i;
         }
 
-        size_t available_count() const {
-            std::lock_guard<std::mutex> lock(mutex_);
-            return available_.size();
-        }
-    };
+        // Shuffle using random device
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::shuffle(indices_.begin(), indices_.end(), gen);
 
-    // Wrapper for camera with raw image data
-    struct CameraWithImage {
-        lfs::core::Camera* camera;
-        CUDAImageBuffer* image_buffer; // Borrowed from pool
+        index_ = 0;
+    }
 
-        // For compatibility - return raw pointer
-        const float* image_data() const {
-            return image_buffer ? image_buffer->data() : nullptr;
-        }
-
-        size_t image_width() const {
-            return image_buffer ? image_buffer->width() : 0;
-        }
-
-        size_t image_height() const {
-            return image_buffer ? image_buffer->height() : 0;
-        }
-
-        size_t image_channels() const {
-            return image_buffer ? image_buffer->channels() : 3;
-        }
-
-        // Raw pointer accessors for fast access
-        const float* world_view_transform_ptr() const {
-            return camera->world_view_transform().ptr<float>();
-        }
-
-        const float* cam_position_ptr() const {
-            return camera->cam_position().ptr<float>();
-        }
-    };
-
-    // Forward declarations
-    class InfiniteRandomSampler;
-    class RandomSampler;
-
-    class CameraDataset {
-    public:
-        enum class Split {
-            TRAIN,
-            VAL,
-            ALL
-        };
-
-        CameraDataset(std::vector<std::shared_ptr<lfs::core::Camera>> cameras,
-                      const lfs::core::param::DatasetConfig& params,
-                      Split split = Split::ALL)
-            : _cameras(std::move(cameras)),
-              _datasetConfig(params),
-              _split(split),
-              _buffer_pool(std::make_shared<ImageBufferPool>(16)) {
-
-            // Create indices based on split
-            _indices.clear();
-            for (size_t i = 0; i < _cameras.size(); ++i) {
-                const bool is_test = (i % params.test_every) == 0;
-
-                if (_split == Split::ALL ||
-                    (_split == Split::TRAIN && !is_test) ||
-                    (_split == Split::VAL && is_test)) {
-                    _indices.push_back(i);
-                }
-            }
-
-            std::cout << "Dataset created with " << _indices.size()
-                      << " images (split: " << static_cast<int>(_split) << ")" << std::endl;
-        }
-
-        // Default copy constructor works with shared_ptr
-        CameraDataset(const CameraDataset&) = default;
-        CameraDataset(CameraDataset&&) noexcept = default;
-        CameraDataset& operator=(CameraDataset&&) noexcept = default;
-        CameraDataset& operator=(const CameraDataset&) = default;
-
-        // Share buffer pool between datasets
-        void share_buffer_pool(std::shared_ptr<ImageBufferPool> pool) {
-            _buffer_pool = pool;
-        }
-
-        CameraWithImage get(size_t index) {
-            if (index >= _indices.size()) {
-                throw std::out_of_range("Dataset index out of range");
-            }
-
-            size_t camera_idx = _indices[index];
-            auto& cam = _cameras[camera_idx];
-
-            // Get buffer from pool
-            CUDAImageBuffer* buffer = _buffer_pool->acquire();
-
-            // Load image directly into buffer
-            buffer->load_from_file(cam->image_path(), _datasetConfig.resize_factor);
-
-            // Update camera's image dimensions if needed
-            if (cam->image_width() != static_cast<int>(buffer->width()) ||
-                cam->image_height() != static_cast<int>(buffer->height())) {
-                cam->load_image_size(_datasetConfig.resize_factor);
-            }
-
-            return {cam.get(), buffer};
-        }
-
-        // Return buffer to pool after use
-        void release_buffer(CUDAImageBuffer* buffer) {
-            if (buffer && _buffer_pool) {
-                _buffer_pool->release(buffer);
-            }
-        }
-
-        size_t size() const {
-            return _indices.size();
-        }
-
-        const std::vector<std::shared_ptr<lfs::core::Camera>>& get_cameras() const {
-            return _cameras;
-        }
-
-        Split get_split() const { return _split; }
-
-        size_t get_num_bytes() const {
-            if (_cameras.empty()) {
-                return 0;
-            }
-            size_t total_bytes = 0;
-            // for (const auto& cam : _cameras) {
-            //     //total_bytes += cam->get_num_bytes_from_file();
-            // }
-            //  Adjust for resolution factor if specified
-            if (_datasetConfig.resize_factor > 0) {
-                total_bytes /= _datasetConfig.resize_factor * _datasetConfig.resize_factor;
-            }
-            return total_bytes;
-        }
-
-        [[nodiscard]] std::optional<lfs::core::Camera*> get_camera_by_filename(const std::string& filename) const {
-            for (const auto& cam : _cameras) {
-                if (cam->image_name() == filename) {
-                    return cam.get();
-                }
-            }
+    /// Get next batch of indices
+    std::optional<std::vector<size_t>> next(size_t batch_size) {
+        if (index_ >= size_) {
             return std::nullopt;
         }
 
-        void set_resize_factor(int resize_factor) {
-            _datasetConfig.resize_factor = resize_factor;
-        }
+        const size_t end = std::min(index_ + batch_size, size_);
+        std::vector<size_t> batch(indices_.begin() + index_, indices_.begin() + end);
+        index_ = end;
 
-        std::shared_ptr<ImageBufferPool> get_buffer_pool() const {
-            return _buffer_pool;
-        }
+        return batch;
+    }
 
-    private:
-        std::vector<std::shared_ptr<lfs::core::Camera>> _cameras;
-        lfs::core::param::DatasetConfig _datasetConfig;
-        Split _split;
-        std::vector<size_t> _indices;
-        std::shared_ptr<ImageBufferPool> _buffer_pool;
+    size_t size() const { return size_; }
+
+private:
+    size_t size_;
+    size_t index_;
+    std::vector<size_t> indices_;
+};
+
+/// Infinite random sampler - automatically resets when exhausted
+class InfiniteRandomSampler : public RandomSampler {
+public:
+    explicit InfiniteRandomSampler(size_t size) : RandomSampler(size) {}
+
+    std::optional<std::vector<size_t>> next(size_t batch_size) {
+        auto batch = RandomSampler::next(batch_size);
+        if (!batch) {
+            reset();
+            batch = RandomSampler::next(batch_size);
+        }
+        return batch;
+    }
+};
+
+// ============================================================================
+// Dataset
+// ============================================================================
+
+/// Camera with loaded image
+struct CameraWithImage {
+    lfs::core::Camera* camera;
+    lfs::core::Tensor image;
+};
+
+/// Dataset example type
+struct CameraExample {
+    CameraWithImage data;
+    lfs::core::Tensor target; // Empty tensor, not used
+};
+
+/// Camera dataset configuration
+struct DatasetConfig {
+    int resize_factor = 1;
+    int max_width = 0;
+    int test_every = 8;
+};
+
+/// Camera dataset - loads images from cameras
+class CameraDataset {
+public:
+    enum class Split {
+        TRAIN,
+        VAL,
+        ALL
     };
 
-    // Regular random sampler (non-infinite)
-    class RandomSampler {
-    public:
-        explicit RandomSampler(size_t dataset_size)
-            : size_(dataset_size),
-              current_position_(0),
-              gen_(std::random_device{}()) {
+    CameraDataset(std::vector<std::shared_ptr<lfs::core::Camera>> cameras,
+                  const DatasetConfig& config,
+                  Split split = Split::ALL,
+                  std::optional<std::vector<std::string>> included_images = std::nullopt)
+        : cameras_(std::move(cameras)), config_(config), split_(split) {
 
-            if (size_ == 0) {
-                throw std::invalid_argument("Dataset size must be positive");
-            }
-
-            // Generate initial permutation
-            generate_permutation();
-        }
-
-        // Get next batch of indices (returns nullopt when epoch is done)
-        std::optional<std::vector<size_t>> next(size_t batch_size) {
-            if (current_position_ >= indices_.size()) {
-                return std::nullopt; // End of epoch
-            }
-
-            std::vector<size_t> batch;
-            batch.reserve(batch_size);
-
-            for (size_t i = 0; i < batch_size && current_position_ < indices_.size(); ++i) {
-                batch.push_back(indices_[current_position_]);
-                current_position_++;
-            }
-
-            return batch;
-        }
-
-        void reset() {
-            generate_permutation();
-            current_position_ = 0;
-        }
-
-        size_t size() const { return size_; }
-
-    private:
-        void generate_permutation() {
-            indices_.resize(size_);
-            for (size_t i = 0; i < size_; ++i) {
-                indices_[i] = i;
-            }
-            std::shuffle(indices_.begin(), indices_.end(), gen_);
-        }
-
-        size_t size_;
-        size_t current_position_;
-        std::vector<size_t> indices_;
-        std::mt19937 gen_;
-    };
-
-    // Torch-free infinite random sampler
-    class InfiniteRandomSampler {
-    public:
-        explicit InfiniteRandomSampler(size_t dataset_size)
-            : size_(dataset_size),
-              current_position_(0),
-              epoch_(0),
-              gen_(std::random_device{}()) {
-
-            if (size_ == 0) {
-                throw std::invalid_argument("Dataset size must be positive");
-            }
-
-            // Generate initial permutation
-            generate_permutation();
-        }
-
-        // Get next batch of indices
-        std::vector<size_t> next(size_t batch_size) {
-            std::vector<size_t> batch;
-            batch.reserve(batch_size);
-
-            for (size_t i = 0; i < batch_size; ++i) {
-                // Check if we need to generate new permutation
-                if (current_position_ >= indices_.size()) {
-                    generate_permutation();
-                    current_position_ = 0;
-                    epoch_++;
+        // Create indices based on split
+        indices_.clear();
+        if (included_images.has_value()) {
+            for (size_t i = 0; i < cameras_.size(); ++i) {
+                // Simple filename matching without extension
+                auto img_name = cameras_[i]->image_name();
+                // Remove extension
+                auto dot_pos = img_name.find_last_of('.');
+                if (dot_pos != std::string::npos) {
+                    img_name = img_name.substr(0, dot_pos);
                 }
 
-                batch.push_back(indices_[current_position_]);
-                current_position_++;
+                if (std::find(included_images->begin(), included_images->end(), img_name) !=
+                    included_images->end()) {
+                    indices_.push_back(i);
+                }
             }
+        } else {
+            for (size_t i = 0; i < cameras_.size(); ++i) {
+                const bool is_test = (i % config.test_every) == 0;
 
-            return batch;
-        }
-
-        // Get single index
-        size_t next_single() {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (current_position_ >= indices_.size()) {
-                generate_permutation();
-                current_position_ = 0;
-                epoch_++;
-            }
-
-            return indices_[current_position_++];
-        }
-
-        void reset() {
-            std::lock_guard<std::mutex> lock(mutex_);
-            generate_permutation();
-            current_position_ = 0;
-            epoch_++;
-        }
-
-        size_t size() const { return size_; }
-        size_t epoch() const {
-            std::lock_guard<std::mutex> lock(mutex_);
-            return epoch_;
-        }
-        size_t position() const {
-            std::lock_guard<std::mutex> lock(mutex_);
-            return current_position_;
-        }
-
-    private:
-        void generate_permutation() {
-            indices_.resize(size_);
-            for (size_t i = 0; i < size_; ++i) {
-                indices_[i] = i;
-            }
-            std::shuffle(indices_.begin(), indices_.end(), gen_);
-        }
-
-        size_t size_;
-        size_t current_position_;
-        size_t epoch_;
-        std::vector<size_t> indices_;
-        std::mt19937 gen_;
-        mutable std::mutex mutex_;
-    };
-
-    // Simple batch structure
-    struct CameraBatch {
-        std::vector<CameraWithImage> data;
-        std::shared_ptr<ImageBufferPool> pool; // Keep reference to pool
-
-        CameraBatch() = default;
-
-        ~CameraBatch() {
-            // Return all buffers to pool when batch is destroyed
-            if (pool) {
-                for (auto& item : data) {
-                    if (item.image_buffer) {
-                        pool->release(item.image_buffer);
-                    }
+                if (split_ == Split::ALL || (split_ == Split::TRAIN && !is_test) ||
+                    (split_ == Split::VAL && is_test)) {
+                    indices_.push_back(i);
                 }
             }
         }
 
-        // Move only
-        CameraBatch(const CameraBatch&) = delete;
-        CameraBatch& operator=(const CameraBatch&) = delete;
+        std::cout << "Dataset created with " << indices_.size()
+                  << " images (split: " << static_cast<int>(split_) << ")" << std::endl;
+    }
 
-        CameraBatch(CameraBatch&& other) noexcept
-            : data(std::move(other.data)),
-              pool(std::move(other.pool)) {
-            other.data.clear();
+    /// Get single example by index
+    CameraExample get(size_t index) const {
+        if (index >= indices_.size()) {
+            throw std::out_of_range("Dataset index out of range");
         }
 
-        CameraBatch& operator=(CameraBatch&& other) noexcept {
-            if (this != &other) {
-                // Return current buffers first
-                if (pool) {
-                    for (auto& item : data) {
-                        if (item.image_buffer) {
-                            pool->release(item.image_buffer);
-                        }
-                    }
-                }
-                data = std::move(other.data);
-                pool = std::move(other.pool);
-                other.data.clear();
-            }
-            return *this;
-        }
+        const size_t camera_idx = indices_[index];
+        auto& cam = cameras_[camera_idx];
 
-        CameraWithImage& operator[](size_t idx) {
-            if (idx >= data.size()) {
-                throw std::out_of_range("Batch index out of range");
-            }
-            return data[idx];
-        }
+        // Load image using the new LibTorch-free Camera
+        lfs::core::Tensor image = cam->load_and_get_image(config_.resize_factor, config_.max_width);
 
-        const CameraWithImage& operator[](size_t idx) const {
-            if (idx >= data.size()) {
-                throw std::out_of_range("Batch index out of range");
-            }
-            return data[idx];
-        }
-    };
-
-    // Regular DataLoader (non-infinite) - for evaluation, single-threaded
-    class DataLoader {
-    public:
-        DataLoader(std::shared_ptr<CameraDataset> dataset,
-                   size_t batch_size = 1,
-                   [[maybe_unused]] int num_workers = 0) // num_workers ignored for evaluation
-            : dataset_(dataset),
-              batch_size_(batch_size),
-              sampler_(dataset->size()) {
-        }
-
-        // Iterator for range-based for loops
-        class Iterator {
-        public:
-            Iterator(DataLoader* loader, bool is_end = false)
-                : loader_(loader),
-                  is_end_(is_end) {
-                if (!is_end_) {
-                    advance();
-                }
-            }
-
-            CameraBatch operator*() {
-                return std::move(current_batch_);
-            }
-
-            Iterator& operator++() {
-                advance();
-                return *this;
-            }
-
-            bool operator!=(const Iterator& other) const {
-                return is_end_ != other.is_end_;
-            }
-
-        private:
-            void advance() {
-                auto indices = loader_->sampler_.next(loader_->batch_size_);
-                if (!indices) {
-                    is_end_ = true;
-                    return;
-                }
-
-                current_batch_ = CameraBatch();
-                current_batch_.pool = loader_->dataset_->get_buffer_pool();
-                current_batch_.data.clear();
-                for (size_t idx : *indices) {
-                    current_batch_.data.push_back(loader_->dataset_->get(idx));
-                }
-            }
-
-            DataLoader* loader_;
-            CameraBatch current_batch_;
-            bool is_end_;
+        return {
+            {cam.get(), std::move(image)},
+            lfs::core::Tensor() // Empty target
         };
+    }
 
-        Iterator begin() {
-            sampler_.reset(); // Reset sampler for new epoch
-            return Iterator(this, false);
+    /// Get batch of examples by indices
+    std::vector<CameraExample> get_batch(const std::vector<size_t>& indices) const {
+        std::vector<CameraExample> batch;
+        batch.reserve(indices.size());
+        for (size_t idx : indices) {
+            batch.push_back(get(idx));
+        }
+        return batch;
+    }
+
+    size_t size() const { return indices_.size(); }
+
+    const std::vector<std::shared_ptr<lfs::core::Camera>>& get_cameras() const { return cameras_; }
+
+    Split get_split() const { return split_; }
+
+    size_t get_num_bytes() const {
+        if (cameras_.empty()) {
+            return 0;
+        }
+        size_t total_bytes = 0;
+        for (const auto& cam : cameras_) {
+            total_bytes +=
+                cam->get_num_bytes_from_file(config_.resize_factor, config_.max_width);
+        }
+        return total_bytes;
+    }
+
+    [[nodiscard]] std::optional<lfs::core::Camera*> get_camera_by_filename(
+        const std::string& filename) const {
+        for (const auto& cam : cameras_) {
+            if (cam->image_name() == filename) {
+                return cam.get();
+            }
+        }
+        return std::nullopt;
+    }
+
+    void set_resize_factor(int resize_factor) { config_.resize_factor = resize_factor; }
+    void set_max_width(int max_width) { config_.max_width = max_width; }
+
+private:
+    std::vector<std::shared_ptr<lfs::core::Camera>> cameras_;
+    DatasetConfig config_;
+    Split split_;
+    std::vector<size_t> indices_;
+};
+
+// ============================================================================
+// DataLoader
+// ============================================================================
+
+/// Options for configuring DataLoader
+struct DataLoaderOptions {
+    size_t batch_size = 1;
+    size_t num_workers = 0;
+    size_t max_jobs = 0; // 0 means 2 * num_workers
+    std::optional<std::chrono::milliseconds> timeout = std::nullopt;
+    bool enforce_ordering = true;
+    bool drop_last = false;
+};
+
+/// DataLoader - multi-threaded data loading with prefetching
+template <typename Sampler>
+class DataLoader {
+public:
+    using BatchType = std::vector<CameraExample>;
+
+    DataLoader(std::shared_ptr<CameraDataset> dataset,
+               Sampler sampler,
+               DataLoaderOptions options)
+        : dataset_(dataset),
+          sampler_(std::move(sampler)),
+          options_(options),
+          sequence_number_(0),
+          in_flight_jobs_(0),
+          shutdown_(false) {
+
+        // Set max_jobs default
+        if (options_.max_jobs == 0) {
+            options_.max_jobs = std::max<size_t>(2 * options_.num_workers, 2);
         }
 
-        Iterator end() {
-            return Iterator(this, true);
+        // Start worker threads
+        for (size_t i = 0; i < options_.num_workers; ++i) {
+            workers_.emplace_back([this] { worker_thread(); });
         }
 
-    private:
-        std::shared_ptr<CameraDataset> dataset_;
-        size_t batch_size_;
-        RandomSampler sampler_;
+        // Prefetch initial jobs
+        prefetch(options_.max_jobs);
+    }
+
+    ~DataLoader() {
+        shutdown();
+    }
+
+    // Disable copying and moving
+    DataLoader(const DataLoader&) = delete;
+    DataLoader& operator=(const DataLoader&) = delete;
+    DataLoader(DataLoader&&) = delete;
+    DataLoader& operator=(DataLoader&&) = delete;
+
+    /// Get next batch (blocking)
+    std::optional<BatchType> next() {
+        if (options_.num_workers > 0) {
+            // Multi-threaded path
+            while (auto result = pop_result()) {
+                if (result->exception) {
+                    std::rethrow_exception(result->exception);
+                } else if (result->batch) {
+                    prefetch(1); // Keep pipeline full
+                    return std::move(result->batch);
+                }
+            }
+        } else {
+            // Single-threaded path
+            auto indices = sampler_.next(options_.batch_size);
+            if (!indices || (indices->size() < options_.batch_size && options_.drop_last)) {
+                return std::nullopt;
+            }
+            return dataset_->get_batch(*indices);
+        }
+        return std::nullopt;
+    }
+
+    /// Reset the dataloader for new epoch
+    void reset() {
+        drain();
+        sampler_.reset();
+        sequence_number_ = 0;
+        prefetch(options_.max_jobs);
+    }
+
+    /// Shutdown worker threads
+    void shutdown() {
+        if (shutdown_) {
+            return;
+        }
+        shutdown_ = true;
+
+        drain();
+
+        // Send quit signal to all workers
+        for (size_t i = 0; i < options_.num_workers; ++i) {
+            Job quit_job;
+            quit_job.quit = true;
+            quit_job.sequence_number = sequence_number_++;
+            job_queue_.push(std::move(quit_job));
+        }
+
+        // Join all workers
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+    }
+
+    size_t in_flight_jobs() const { return in_flight_jobs_; }
+
+private:
+    struct Job {
+        size_t sequence_number = 0;
+        std::optional<std::vector<size_t>> indices;
+        bool quit = false;
     };
 
-    // Torch-free Infinite DataLoader with worker threads for training
-    class InfiniteDataLoader {
-    public:
-        InfiniteDataLoader(std::shared_ptr<CameraDataset> dataset,
-                           size_t batch_size = 1,
-                           int num_workers = 4)
-            : dataset_(dataset),
-              batch_size_(batch_size),
-              num_workers_(std::max(0, num_workers)),
-              sampler_(dataset->size()),
-              stop_workers_(false),
-              prefetch_factor_(2) {
-
-            if (num_workers_ > 0) {
-                // Start worker threads
-                for (int i = 0; i < num_workers_; ++i) {
-                    workers_.emplace_back(&InfiniteDataLoader::worker_thread, this, i);
-                }
-                LOG_DEBUG("Started {} worker threads for training dataloader", num_workers_);
-            } else {
-                LOG_WARN("Running training dataloader without workers - expect memory issues!");
-            }
-        }
-
-        ~InfiniteDataLoader() {
-            stop_workers_ = true;
-            cv_workers_.notify_all();
-
-            for (auto& worker : workers_) {
-                if (worker.joinable()) {
-                    worker.join();
-                }
-            }
-        }
-
-        // Iterator for range-based for loops
-        class Iterator {
-        public:
-            Iterator(InfiniteDataLoader* loader, bool is_end = false)
-                : loader_(loader),
-                  is_end_(is_end) {
-                if (!is_end_) {
-                    advance();
-                }
-            }
-
-            CameraBatch operator*() {
-                return std::move(current_batch_);
-            }
-
-            Iterator& operator++() {
-                advance();
-                return *this;
-            }
-
-            bool operator!=(const Iterator& other) const {
-                // Infinite iterator never equals end
-                return !is_end_ || !other.is_end_;
-            }
-
-        private:
-            void advance() {
-                if (loader_->num_workers_ > 0) {
-                    // Get from queue (workers are loading in background)
-                    current_batch_ = loader_->get_next_batch();
-                } else {
-                    // Single-threaded fallback
-                    size_t idx = loader_->sampler_.next_single();
-                    current_batch_ = CameraBatch();
-                    current_batch_.pool = loader_->dataset_->get_buffer_pool();
-                    current_batch_.data.clear();
-                    current_batch_.data.push_back(loader_->dataset_->get(idx));
-                }
-            }
-
-            InfiniteDataLoader* loader_;
-            CameraBatch current_batch_;
-            bool is_end_;
-        };
-
-        Iterator begin() {
-            return Iterator(this, false);
-        }
-
-        Iterator end() {
-            return Iterator(this, true);
-        }
-
-    private:
-        void worker_thread(int worker_id) {
-            // Set CUDA device for this worker thread (CRITICAL for GUI mode)
-            cudaSetDevice(0);
-
-            // Set CPU affinity if possible (Linux/Unix only)
-#if defined(__linux__) || defined(__unix__)
-            cpu_set_t cpuset;
-            CPU_ZERO(&cpuset);
-            CPU_SET(worker_id % std::thread::hardware_concurrency(), &cpuset);
-            pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-#endif
-
-            while (!stop_workers_) {
-                // Check queue size
-                {
-                    std::unique_lock<std::mutex> lock(queue_mutex_);
-                    cv_workers_.wait(lock, [this] {
-                        return stop_workers_ ||
-                               loaded_batches_.size() < prefetch_factor_ * num_workers_;
-                    });
-                }
-
-                if (stop_workers_)
-                    break;
-
-                // Get next index
-                size_t idx = sampler_.next_single();
-
-                // Load data (this happens outside the lock)
-                CameraBatch batch;
-                batch.pool = dataset_->get_buffer_pool();
-                batch.data.push_back(dataset_->get(idx));
-
-                // Add to queue
-                {
-                    std::lock_guard<std::mutex> lock(queue_mutex_);
-                    loaded_batches_.push(std::move(batch));
-                }
-                cv_main_.notify_one();
-            }
-        }
-
-        CameraBatch get_next_batch() {
-            std::unique_lock<std::mutex> lock(queue_mutex_);
-
-            // Notify workers if queue is getting low
-            if (loaded_batches_.size() < prefetch_factor_) {
-                cv_workers_.notify_all();
-            }
-
-            // Wait for batch
-            cv_main_.wait(lock, [this] {
-                return !loaded_batches_.empty() || stop_workers_;
-            });
-
-            if (stop_workers_ && loaded_batches_.empty()) {
-                return CameraBatch();
-            }
-
-            CameraBatch batch = std::move(loaded_batches_.front());
-            loaded_batches_.pop();
-
-            // Notify workers to produce more
-            cv_workers_.notify_one();
-
-            return batch;
-        }
-
-        std::shared_ptr<CameraDataset> dataset_;
-        size_t batch_size_;
-        int num_workers_;
-        InfiniteRandomSampler sampler_;
-
-        // Worker management
-        std::vector<std::thread> workers_;
-        std::queue<CameraBatch> loaded_batches_;
-        std::mutex queue_mutex_;
-        std::condition_variable cv_workers_;
-        std::condition_variable cv_main_;
-        std::atomic<bool> stop_workers_;
-        size_t prefetch_factor_;
+    struct Result {
+        size_t sequence_number = 0;
+        std::optional<BatchType> batch;
+        std::exception_ptr exception;
     };
 
-    // Factory functions to match existing interface
-    inline std::unique_ptr<DataLoader> create_dataloader_from_dataset(
-        std::shared_ptr<CameraDataset> dataset,
-        int num_workers = 4) {
-
-        return std::make_unique<DataLoader>(dataset, 1, num_workers);
-    }
-
-    inline std::unique_ptr<InfiniteDataLoader> create_infinite_dataloader_from_dataset(
-        std::shared_ptr<CameraDataset> dataset,
-        int num_workers = 4) {
-
-        return std::make_unique<InfiniteDataLoader>(dataset, 1, num_workers);
-    }
-
-    // Keep the existing create_dataset
-    inline std::expected<std::tuple<std::shared_ptr<CameraDataset>, lfs::core::Tensor>, std::string>
-    create_dataset_from_colmap(const lfs::core::param::DatasetConfig& datasetConfig) {
-        try {
-            if (!std::filesystem::exists(datasetConfig.data_path)) {
-                return std::unexpected(std::format("Data path does not exist: {}",
-                                                   datasetConfig.data_path.string()));
+    /// Worker thread function
+    void worker_thread() {
+        while (true) {
+            auto job_opt = job_queue_.pop();
+            if (!job_opt) {
+                continue; // Spurious wakeup
             }
 
-            // Create loader
-            auto loader = lfs::loader::Loader::create();
+            Job job = std::move(*job_opt);
 
-            // Set up load options
-            lfs::loader::LoadOptions options{
-                .resize_factor = datasetConfig.resize_factor,
-                .images_folder = datasetConfig.images,
-                .validate_only = false};
-
-            // Load the data
-            auto result = loader->load(datasetConfig.data_path, options);
-            if (!result) {
-                return std::unexpected(std::format("Failed to load COLMAP dataset: {}", result.error()));
+            if (job.quit) {
+                break;
             }
 
-            // Handle the result
-            return std::visit(
-                [&result, &datasetConfig](
-                    auto&& data) -> std::expected<std::tuple<std::shared_ptr<CameraDataset>, lfs::core::Tensor>, std::string> {
-                    using T = std::decay_t<decltype(data)>;
+            try {
+                auto batch = dataset_->get_batch(*job.indices);
 
-                    if constexpr (std::is_same_v<T, std::shared_ptr<lfs::core::SplatData>>) {
-                        return std::unexpected("Expected COLMAP dataset but got PLY file");
-                    } else if constexpr (std::is_same_v<T, lfs::loader::LoadedScene>) {
-                        if (!data.cameras) {
-                            return std::unexpected("Loaded scene has no cameras");
-                        }
-
-                        // Return the camera dataset that's already been created
-                        return std::make_tuple(data.cameras, result->scene_center);
-                    } else {
-                        return std::unexpected("Unknown data type returned from loader");
-                    }
-                },
-                result->data);
-        } catch (const std::exception& e) {
-            return std::unexpected(std::format("Failed to create dataset from COLMAP: {}", e.what()));
+                Result result;
+                result.sequence_number = job.sequence_number;
+                result.batch = std::move(batch);
+                result_queue_.push(std::move(result));
+            } catch (...) {
+                Result result;
+                result.sequence_number = job.sequence_number;
+                result.exception = std::current_exception();
+                result_queue_.push(std::move(result));
+            }
         }
     }
 
-    inline std::expected<std::tuple<std::shared_ptr<CameraDataset>, lfs::core::Tensor>, std::string>
-    create_dataset_from_transforms(const lfs::core::param::DatasetConfig& datasetConfig) {
-        try {
-            if (!std::filesystem::exists(datasetConfig.data_path)) {
-                return std::unexpected(std::format("Data path does not exist: {}",
-                                                   datasetConfig.data_path.string()));
+    /// Prefetch n jobs
+    void prefetch(size_t n) {
+        for (size_t i = 0; i < n; ++i) {
+            auto indices = sampler_.next(options_.batch_size);
+            if (!indices || (indices->size() < options_.batch_size && options_.drop_last)) {
+                break;
             }
 
-            // Create loader
-            auto loader = lfs::loader::Loader::create();
+            Job job;
+            job.sequence_number = sequence_number_++;
+            job.indices = std::move(indices);
 
-            // Set up load options
-            lfs::loader::LoadOptions options{
-                .resize_factor = datasetConfig.resize_factor,
-                .images_folder = datasetConfig.images,
-                .validate_only = false};
-
-            // Load the data
-            auto result = loader->load(datasetConfig.data_path, options);
-            if (!result) {
-                return std::unexpected(std::format("Failed to load transforms dataset: {}", result.error()));
-            }
-
-            // Handle the result
-            return std::visit(
-                [&datasetConfig, &result](
-                    auto&& data) -> std::expected<std::tuple<std::shared_ptr<CameraDataset>, lfs::core::Tensor>, std::string> {
-                    using T = std::decay_t<decltype(data)>;
-
-                    if constexpr (std::is_same_v<T, std::shared_ptr<lfs::core::SplatData>>) {
-                        return std::unexpected("Expected transforms.json dataset but got PLY file");
-                    } else if constexpr (std::is_same_v<T, lfs::loader::LoadedScene>) {
-                        if (!data.cameras) {
-                            return std::unexpected("Loaded scene has no cameras");
-                        }
-
-                        // Return the camera dataset that's already been created
-                        return std::make_tuple(data.cameras, result->scene_center);
-                    } else {
-                        return std::unexpected("Unknown data type returned from loader");
-                    }
-                },
-                result->data);
-        } catch (const std::exception& e) {
-            return std::unexpected(std::format("Failed to create dataset from transforms: {}", e.what()));
+            job_queue_.push(std::move(job));
+            ++in_flight_jobs_;
         }
     }
+
+    /// Pop result from queue
+    std::optional<Result> pop_result() {
+        if (in_flight_jobs_ == 0) {
+            return std::nullopt;
+        }
+
+        auto result_opt = result_queue_.pop(options_.timeout);
+        if (result_opt) {
+            --in_flight_jobs_;
+            return result_opt;
+        }
+
+        return std::nullopt;
+    }
+
+    /// Drain all pending jobs
+    void drain() {
+        // Clear pending jobs
+        const size_t cleared = job_queue_.clear();
+        in_flight_jobs_ -= cleared;
+
+        // Wait for in-flight jobs to complete
+        while (in_flight_jobs_ > 0) {
+            pop_result();
+        }
+    }
+
+    std::shared_ptr<CameraDataset> dataset_;
+    Sampler sampler_;
+    DataLoaderOptions options_;
+
+    size_t sequence_number_;
+    std::atomic<size_t> in_flight_jobs_;
+
+    std::vector<std::thread> workers_;
+    ThreadSafeQueue<Job> job_queue_;
+    ThreadSafeQueue<Result> result_queue_;
+
+    bool shutdown_;
+};
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Create dataloader with standard random sampling
+template <typename SamplerType = RandomSampler>
+inline auto create_dataloader_from_dataset(std::shared_ptr<CameraDataset> dataset,
+                                           int num_workers = 4) {
+    const size_t dataset_size = dataset->size();
+
+    DataLoaderOptions options;
+    options.batch_size = 1;
+    options.num_workers = num_workers;
+    options.enforce_ordering = false;
+
+    return std::make_unique<DataLoader<SamplerType>>(
+        dataset, SamplerType(dataset_size), options);
+}
+
+/// Create dataloader with infinite random sampling (auto-resets)
+inline auto create_infinite_dataloader_from_dataset(std::shared_ptr<CameraDataset> dataset,
+                                                    int num_workers = 4) {
+    return create_dataloader_from_dataset<InfiniteRandomSampler>(dataset, num_workers);
+}
 
 } // namespace lfs::training

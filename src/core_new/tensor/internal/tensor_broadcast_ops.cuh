@@ -124,7 +124,11 @@ namespace lfs::core::tensor_ops {
         const float* a, const float* b, float* c,
         size_t M, size_t N, bool a_is_row,
         BinaryOp op) {
-        const size_t row = blockIdx.y;
+        // CRITICAL FIX: Handle 3D grids for M > 65535
+        const size_t row = blockIdx.z * gridDim.y + blockIdx.y;
+        if (row >= M)
+            return;
+
         const size_t col_vec = blockIdx.x * blockDim.x + threadIdx.x;
         const size_t col = col_vec * 4;
 
@@ -174,7 +178,11 @@ namespace lfs::core::tensor_ops {
         const float* a, const float* b, unsigned char* c,
         size_t M, size_t N, bool a_is_row,
         BinaryOp op) {
-        const size_t row = blockIdx.y;
+        // CRITICAL FIX: Handle 3D grids for M > 65535
+        const size_t row = blockIdx.z * gridDim.y + blockIdx.y;
+        if (row >= M)
+            return;
+
         const size_t col_vec = blockIdx.x * blockDim.x + threadIdx.x;
         const size_t col = col_vec * 4;
 
@@ -225,10 +233,11 @@ namespace lfs::core::tensor_ops {
         const float* a, const float* b, float* c,
         size_t M, size_t N, bool a_is_col,
         BinaryOp op) {
-        const size_t row = blockIdx.y;
+        // CRITICAL FIX: Handle 3D grids for M > 65535
+        const size_t row = blockIdx.z * gridDim.y + blockIdx.y;
         const size_t col = blockIdx.x * blockDim.x + threadIdx.x;
 
-        if (col >= N)
+        if (row >= M || col >= N)
             return;
 
         const size_t idx = row * N + col;
@@ -630,7 +639,8 @@ namespace lfs::core::tensor_ops {
         const float* a, const float* b, float* c,
         size_t B, size_t H, size_t W, bool a_is_broadcast,
         BinaryOp op) {
-        const size_t batch = blockIdx.y;
+        // CRITICAL FIX: Handle 3D grids for B > 65535
+        const size_t batch = blockIdx.z * gridDim.y + blockIdx.y;
         const size_t elem_vec = blockIdx.x * blockDim.x + threadIdx.x;
         const size_t elem = elem_vec * 4; // Process 4 elements per thread
 
@@ -777,9 +787,22 @@ namespace lfs::core::tensor_ops {
                 const size_t N = c_shape[1];
                 const bool a_is_row = (a_shape[0] == 1);
 
+                // CRITICAL FIX: Handle M > 65535 by using 3D grid
+                const int max_grid_dim = 65535; // CUDA Y/Z dimension limit
+
                 // Each thread processes 4 elements
                 const size_t num_vec = (N + 3) / 4;
-                dim3 grid((num_vec + block_size - 1) / block_size, M);
+                const int grid_x = (num_vec + block_size - 1) / block_size;
+
+                dim3 grid;
+                if (M <= max_grid_dim) {
+                    grid = dim3(grid_x, M);
+                } else {
+                    // Split M across grid.y and grid.z
+                    const int grid_y = max_grid_dim;
+                    const int grid_z = (M + max_grid_dim - 1) / max_grid_dim;
+                    grid = dim3(grid_x, grid_y, grid_z);
+                }
 
 #ifdef __CUDACC__
                 broadcast_row_comparison_kernel<<<grid, block_size, 0, stream>>>(
@@ -828,9 +851,22 @@ namespace lfs::core::tensor_ops {
                 const size_t N = c_shape[1];
                 const bool a_is_row = (a_shape[0] == 1);
 
+                // CRITICAL FIX: Handle M > 65535 by using 3D grid
+                const int max_grid_dim = 65535; // CUDA Y/Z dimension limit
+
                 // Each thread processes 4 elements
                 const size_t num_vec = (N + 3) / 4;
-                dim3 grid((num_vec + block_size - 1) / block_size, M);
+                const int grid_x = (num_vec + block_size - 1) / block_size;
+
+                dim3 grid;
+                if (M <= max_grid_dim) {
+                    grid = dim3(grid_x, M);
+                } else {
+                    // Split M across grid.y and grid.z
+                    const int grid_y = max_grid_dim;
+                    const int grid_z = (M + max_grid_dim - 1) / max_grid_dim;
+                    grid = dim3(grid_x, grid_y, grid_z);
+                }
 
 #ifdef __CUDACC__
                 broadcast_row_kernel_float<<<grid, block_size, 0, stream>>>(
@@ -847,7 +883,19 @@ namespace lfs::core::tensor_ops {
                 const size_t N = c_shape[1];
                 const bool a_is_col = (a_shape[1] == 1);
 
-                dim3 grid((N + block_size - 1) / block_size, M);
+                // CRITICAL FIX: Handle M > 65535 by using 3D grid
+                const int max_grid_dim = 65535; // CUDA Y/Z dimension limit
+                const int grid_x = (N + block_size - 1) / block_size;
+
+                dim3 grid;
+                if (M <= max_grid_dim) {
+                    grid = dim3(grid_x, M);
+                } else {
+                    // Split M across grid.y and grid.z
+                    const int grid_y = max_grid_dim;
+                    const int grid_z = (M + max_grid_dim - 1) / max_grid_dim;
+                    grid = dim3(grid_x, grid_y, grid_z);
+                }
 
 #ifdef __CUDACC__
                 broadcast_column_kernel_float<<<grid, block_size, 0, stream>>>(
@@ -905,9 +953,22 @@ namespace lfs::core::tensor_ops {
                 const size_t W = c_shape[2];
                 const bool a_is_broadcast = (a_shape[0] == 1);
 
+                // CRITICAL FIX: Handle B > 65535 by using 3D grid
+                const int max_grid_dim = 65535; // CUDA Y/Z dimension limit
+
                 const size_t plane_size = H * W;
                 const size_t num_vec = (plane_size + 3) / 4; // Each thread processes 4 elements
-                dim3 grid((num_vec + block_size - 1) / block_size, B);
+                const int grid_x = (num_vec + block_size - 1) / block_size;
+
+                dim3 grid;
+                if (B <= max_grid_dim) {
+                    grid = dim3(grid_x, B);
+                } else {
+                    // Split B across grid.y and grid.z
+                    const int grid_y = max_grid_dim;
+                    const int grid_z = (B + max_grid_dim - 1) / max_grid_dim;
+                    grid = dim3(grid_x, grid_y, grid_z);
+                }
 
 #ifdef __CUDACC__
                 broadcast_batch3d_kernel_float<<<grid, block_size, 0, stream>>>(

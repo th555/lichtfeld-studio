@@ -48,6 +48,13 @@ get_filename_component(PROJ_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
 
 option(ENABLE_CUDA_GL_INTEROP "Enable CUDA-OpenGL interoperability" ON)
 option(BUILD_TESTS "Build tests" OFF)
+option(ENABLE_ALLOCATION_PROFILING "Enable tensor allocation profiling" OFF)
+option(BUILD_LEGACY "Build legacy LibTorch-based binary (LichtFeld-Studio-legacy)" OFF)
+
+# Add -rdynamic for backtrace symbol resolution
+if(UNIX AND NOT APPLE)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -rdynamic")
+endif()
 
 # Build fat binaries for all modern SMs (>= minimum). When OFF (default), build for the native GPU only.
 option(BUILD_CUDA_ALL_SM "Build CUDA fat binaries targeting all modern SMs (>= minimum SM)" OFF)
@@ -285,7 +292,12 @@ endif()
 message(STATUS "CUDA Toolkit ${CUDAToolkit_VERSION} found at ${CUDAToolkit_TARGET_DIR}")
 
 # Find packages
-find_package(Torch REQUIRED)
+if(BUILD_LEGACY)
+    find_package(Torch REQUIRED)
+    message(STATUS "✓ LibTorch found - legacy binary will be built")
+else()
+    message(STATUS "✗ Skipping LibTorch - BUILD_LEGACY=OFF")
+endif()
 find_package(TBB REQUIRED)
 find_package(Threads REQUIRED)
 find_package(OpenGL REQUIRED)
@@ -366,64 +378,66 @@ set_target_properties(gsplat_backend PROPERTIES CUDA_ARCHITECTURES "${LichtFeld-
 set_target_properties(fastgs_backend PROPERTIES CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}")
 
 # =============================================================================
-# SHARED CUDA KERNELS (only if needed)
+# SHARED CUDA KERNELS (Legacy - only built when BUILD_LEGACY=ON)
 # =============================================================================
-set(KERNEL_SOURCES)
-if(CUDA_GL_INTEROP_FOUND)
-    list(APPEND KERNEL_SOURCES kernels/cuda_gl_interop.cu)
-endif()
+if(BUILD_LEGACY)
+    set(KERNEL_SOURCES)
+    if(CUDA_GL_INTEROP_FOUND)
+        list(APPEND KERNEL_SOURCES kernels/cuda_gl_interop.cu)
+    endif()
 
-# Add SOG-related kernels
-list(APPEND KERNEL_SOURCES
-        kernels/morton_encoding.cu
-        kernels/kmeans.cu
-)
-
-# Only create gaussian_kernels if there are kernels
-if(KERNEL_SOURCES)
-    add_library(gs_kernels STATIC ${KERNEL_SOURCES})
-
-    set_target_properties(gs_kernels PROPERTIES
-            CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}"
-            CUDA_SEPARABLE_COMPILATION ON
-            POSITION_INDEPENDENT_CODE ON
-            CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    # Add SOG-related kernels
+    list(APPEND KERNEL_SOURCES
+            kernels/morton_encoding.cu
+            kernels/kmeans.cu
     )
 
-    target_include_directories(gs_kernels
-            PUBLIC
-            ${CMAKE_CURRENT_SOURCE_DIR}/include
-            ${CMAKE_CURRENT_BINARY_DIR}/include
-            ${CMAKE_CURRENT_SOURCE_DIR}/include/kernels
-            ${CUDAToolkit_INCLUDE_DIRS}
-            ${OPENGL_INCLUDE_DIRS}
-            PRIVATE
-    )
+    # Only create gaussian_kernels if there are kernels
+    if(KERNEL_SOURCES)
+        add_library(gs_kernels STATIC ${KERNEL_SOURCES})
 
-    target_link_libraries(gs_kernels
-            PUBLIC
-            CUDA::cudart
-            CUDA::curand
-            CUDA::cublas
-            ${TORCH_LIBRARIES}
-            glm::glm
-            ${OPENGL_LIBRARIES}
-            spdlog::spdlog
-    )
+        set_target_properties(gs_kernels PROPERTIES
+                CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}"
+                CUDA_SEPARABLE_COMPILATION ON
+                POSITION_INDEPENDENT_CODE ON
+                CUDA_RESOLVE_DEVICE_SYMBOLS ON
+        )
 
-    target_compile_options(gs_kernels PRIVATE
-            # CUDA device code + MSVC host compiler flags (Windows only)
-            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo -Xcompiler=/Od -Xcompiler=/Z7>
-            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:-O3 -use_fast_math --ptxas-options=-v -Xcompiler=/O2 -Xcompiler=/DNDEBUG>
+        target_include_directories(gs_kernels
+                PUBLIC
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_BINARY_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/include/kernels
+                ${CUDAToolkit_INCLUDE_DIRS}
+                ${OPENGL_INCLUDE_DIRS}
+                PRIVATE
+        )
 
-            # CUDA device code for non-Windows
-            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo>
-            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3 -use_fast_math --ptxas-options=-v>
-    )
-else()
-    # Create empty interface library if no kernels
-    add_library(gs_kernels INTERFACE)
-endif()
+        target_link_libraries(gs_kernels
+                PUBLIC
+                CUDA::cudart
+                CUDA::curand
+                CUDA::cublas
+                ${TORCH_LIBRARIES}
+                glm::glm
+                ${OPENGL_LIBRARIES}
+                spdlog::spdlog
+        )
+
+        target_compile_options(gs_kernels PRIVATE
+                # CUDA device code + MSVC host compiler flags (Windows only)
+                $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo -Xcompiler=/Od -Xcompiler=/Z7>
+                $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:-O3 -use_fast_math --ptxas-options=-v -Xcompiler=/O2 -Xcompiler=/DNDEBUG>
+
+                # CUDA device code for non-Windows
+                $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo>
+                $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3 -use_fast_math --ptxas-options=-v>
+        )
+    else()
+        # Create empty interface library if no kernels
+        add_library(gs_kernels INTERFACE)
+    endif()
+endif(BUILD_LEGACY)
 
 # =============================================================================
 # LIBRARY MODULES
@@ -431,18 +445,36 @@ endif()
 add_subdirectory(src/core_new)     # New core module (lfs::core namespace)
 add_subdirectory(src/training_new) # New training module (lfs::training namespace)
 add_subdirectory(src/loader_new)   # New loader module (lfs::loader namespace)
-add_subdirectory(src/core)         # Foundation module
-add_subdirectory(src/geometry)     # Geometry utilities
-add_subdirectory(src/project)      # Project management
-add_subdirectory(src/loader)       # Data loading
-add_subdirectory(src/training)     # Training functionality
-add_subdirectory(src/rendering)   # Rendering pipeline
-add_subdirectory(src/visualizer)  # GUI and visualization
+add_subdirectory(src/project_new)  # New project management module (lfs::project namespace)
+add_subdirectory(src/rendering_new) # New rendering module (lfs::rendering namespace)
+add_subdirectory(src/visualizer_new) # New visualizer module (lfs::vis namespace)
+add_subdirectory(src/geometry_new) # LibTorch-free geometry utilities
+
+# Legacy LibTorch-based modules (only built if BUILD_LEGACY=ON)
+if(BUILD_LEGACY)
+    message(STATUS "Building legacy LibTorch-based modules...")
+    add_subdirectory(src/core)         # Foundation module
+    add_subdirectory(src/geometry)     # Geometry utilities
+    add_subdirectory(src/project)      # Project management
+    add_subdirectory(src/loader)       # Data loading
+    add_subdirectory(src/training)     # Training functionality
+    #add_subdirectory(src/training_debug) # Training debug/comparison module
+    add_subdirectory(src/rendering)   # Rendering pipeline
+    add_subdirectory(src/visualizer)  # GUI and visualization
+endif()
 
 # =============================================================================
-# MAIN EXECUTABLE
+# MAIN EXECUTABLES
 # =============================================================================
-add_executable(${PROJECT_NAME} src/main.cpp resources/lichtfeld-studio.rc)
+
+# -----------------------------------------------------------------------------
+# LichtFeld-Studio (NEW, LibTorch-free)
+# -----------------------------------------------------------------------------
+add_executable(${PROJECT_NAME}
+    src/main.cpp
+    src/application.cpp
+    resources/lichtfeld-studio.rc
+)
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
         CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}"
@@ -454,6 +486,8 @@ target_include_directories(${PROJECT_NAME}
         PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_BINARY_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src       # For application.cpp to find training_new/, visualizer/, etc.
+        ${CMAKE_CURRENT_SOURCE_DIR}/external  # For external headers
 
         ${CUDAToolkit_INCLUDE_DIRS}
         ${OPENGL_INCLUDE_DIRS}
@@ -461,7 +495,58 @@ target_include_directories(${PROJECT_NAME}
 
 target_link_libraries(${PROJECT_NAME}
         PRIVATE
-        gs_core
+        # Application layer dependencies (needed by application.cpp)
+        lfs_visualizer     # For Visualizer class
+        lfs_training       # For training setup
+        lfs_project        # For Project management
+        lfs_geometry       # For EuclideanTransform
+        lfs_core           # LibTorch-free core library (new implementation)
+        lfs_loader         # For CacheLoader
+        fastlfs_backend    # LibTorch-free rasterizer and optimizer
+
+        ${OPENGL_LIBRARIES}
+        CUDA::cudart
+        spdlog::spdlog
+        taywee::args
+        OpenImageIO::OpenImageIO
+)
+
+# Platform-specific settings for new torch-free binary
+if(UNIX)
+    target_link_libraries(${PROJECT_NAME} PRIVATE GL GLU)
+
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+            INSTALL_RPATH "${CUDAToolkit_LIBRARY_DIR}"
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH_USE_LINK_PATH TRUE
+    )
+endif()
+
+# -----------------------------------------------------------------------------
+# LichtFeld-Studio-legacy (OLD, LibTorch-based)
+# -----------------------------------------------------------------------------
+if(BUILD_LEGACY)
+    message(STATUS "Building legacy LibTorch-based binary: ${PROJECT_NAME}-legacy")
+    add_executable(${PROJECT_NAME}-legacy src/main_legacy.cpp resources/lichtfeld-studio.rc)
+
+set_target_properties(${PROJECT_NAME}-legacy PROPERTIES
+        CUDA_ARCHITECTURES "${LichtFeld-Studio_CUDA_ARCH}"
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+)
+
+target_include_directories(${PROJECT_NAME}-legacy
+        PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+
+        ${CUDAToolkit_INCLUDE_DIRS}
+        ${OPENGL_INCLUDE_DIRS}
+)
+
+target_link_libraries(${PROJECT_NAME}-legacy
+        PRIVATE
+        gs_core            # LibTorch-based core library (legacy implementation)
         gs_geometry
         gs_project
         gs_loader
@@ -479,25 +564,25 @@ target_link_libraries(${PROJECT_NAME}
         OpenImageIO::OpenImageIO
 )
 
-# Platform-specific settings
+# Platform-specific settings for legacy binary
 if(WIN32)
     file(GLOB TORCH_DLLS "${Torch_DIR}/../../../lib/*.dll")
     foreach(TORCH_DLL ${TORCH_DLLS})
         add_custom_command(
-                TARGET ${PROJECT_NAME}
+                TARGET ${PROJECT_NAME}-legacy
                 POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TORCH_DLL}"
-                "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}-legacy>")
     endforeach()
 elseif(UNIX)
-    target_link_libraries(${PROJECT_NAME} PRIVATE GL GLU)
+    target_link_libraries(${PROJECT_NAME}-legacy PRIVATE GL GLU)
 
     find_path(TORCH_LIB_DIR libtorch_cpu.so
             PATHS "${Torch_DIR}/../../../lib"
             NO_DEFAULT_PATH)
 
     if(TORCH_LIB_DIR)
-        set_target_properties(${PROJECT_NAME} PROPERTIES
+        set_target_properties(${PROJECT_NAME}-legacy PROPERTIES
                 INSTALL_RPATH "${CUDAToolkit_LIBRARY_DIR}:${TORCH_LIB_DIR}"
                 BUILD_WITH_INSTALL_RPATH TRUE
                 INSTALL_RPATH_USE_LINK_PATH TRUE
@@ -507,6 +592,7 @@ elseif(UNIX)
         message(WARNING "Could not find Torch library directory")
     endif()
 endif()
+endif(BUILD_LEGACY)
 
 # Build type configuration function
 function(configure_build_type target)
@@ -528,9 +614,11 @@ function(configure_build_type target)
 endfunction()
 
 # Apply build configuration to all targets
-configure_build_type(gs_core)
-configure_build_type(gs_kernels)
-configure_build_type(gsplat_backend)
+if(BUILD_LEGACY)
+    configure_build_type(gs_core)
+    configure_build_type(gs_kernels)
+    configure_build_type(gsplat_backend)
+endif()
 configure_build_type(fastgs_backend)
 configure_build_type(${PROJECT_NAME})
 
@@ -550,7 +638,12 @@ message(STATUS "===========================================")
 message(STATUS "Build Configuration:")
 message(STATUS "  CUDA Version: ${CUDAToolkit_VERSION}")
 message(STATUS "  CUDA Archs: ${CMAKE_CUDA_ARCHITECTURES}")
-message(STATUS "  Torch Version: ${Torch_VERSION}")
+if(BUILD_LEGACY)
+    message(STATUS "  Torch Version: ${Torch_VERSION}")
+    message(STATUS "  Legacy Binary: ENABLED (LichtFeld-Studio-legacy)")
+else()
+    message(STATUS "  Legacy Binary: DISABLED (set -DBUILD_LEGACY=ON to enable)")
+endif()
 message(STATUS "  OpenGL Found: ${OPENGL_FOUND}")
 message(STATUS "  FreeType Found: ${FREETYPE_FOUND}")
 message(STATUS "  WebP Found: ${WebP_FOUND}")

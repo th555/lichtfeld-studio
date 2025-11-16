@@ -36,8 +36,17 @@ namespace lfs::loader {
         int max_width;
     };
 
+} // namespace lfs::loader
+
+// Forward declare Tensor outside the loader namespace
+namespace lfs::core {
+    class Tensor;
+}
+
+namespace lfs::loader {
+
     struct CachedImageData {
-        std::vector<unsigned char> data;
+        std::shared_ptr<lfs::core::Tensor> tensor;  // Preprocessed tensor in [C,H,W] float32 format
         int width;
         int height;
         int channels;
@@ -57,8 +66,8 @@ namespace lfs::loader {
         // Static method to get existing instance (throws if not initialized)
         static CacheLoader& getInstance();
 
-        // Main method - to be implemented
-        [[nodiscard]] std::tuple<unsigned char*, int, int, int> load_cached_image(const std::filesystem::path& path, const LoadParams& params);
+        // Main method - returns preprocessed tensor in [C,H,W] float32 format on CPU
+        [[nodiscard]] lfs::core::Tensor load_cached_image(const std::filesystem::path& path, const LoadParams& params);
 
         void create_new_cache_folder();
         void reset_cache();
@@ -93,8 +102,8 @@ namespace lfs::loader {
         void set_num_expected_images(int num_expected_images) { num_expected_images_ = num_expected_images; }
 
     private:
-        [[nodiscard]] std::tuple<unsigned char*, int, int, int> load_cached_image_from_cpu(const std::filesystem::path& path, const LoadParams& params);
-        [[nodiscard]] std::tuple<unsigned char*, int, int, int> load_cached_image_from_fs(const std::filesystem::path& path, const LoadParams& params);
+        [[nodiscard]] lfs::core::Tensor load_cached_image_from_cpu(const std::filesystem::path& path, const LoadParams& params);
+        [[nodiscard]] lfs::core::Tensor load_cached_image_from_fs(const std::filesystem::path& path, const LoadParams& params);
         // Private constructor
         CacheLoader(bool use_cpu_memory, bool use_fs_cache);
 

@@ -182,5 +182,12 @@ namespace gs {
             return std::make_tuple(grad_grid, grad_rgb);
         }
 
+        // Manual backward interface (no autograd)
+        std::tuple<torch::Tensor, torch::Tensor> bilateral_grid_slice_backward(
+            const BilateralGridSliceContext& ctx,
+            const torch::Tensor& grad_output) {
+            return slice_backward_cuda(ctx.grid, ctx.rgb, grad_output);
+        }
+
     } // namespace bilateral_grid
 } // namespace gs

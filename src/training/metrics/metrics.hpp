@@ -19,11 +19,6 @@
 class splatData;
 
 namespace gs::training {
-    // SSIM window creation
-    torch::Tensor gaussian(const int window_size, const float sigma);
-
-    torch::Tensor create_window(const int window_size, const int channel);
-
     // Peak Signal-to-Noise Ratio
     class PSNR {
     public:

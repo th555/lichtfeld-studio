@@ -9,7 +9,7 @@
 #include <expected>
 #include <filesystem>
 #include <future>
-#include <geometry/bounding_box.hpp>
+#include "geometry_new/bounding_box.hpp"
 #include <glm/glm.hpp>
 #include <mutex>
 #include <string>
@@ -63,7 +63,7 @@ namespace lfs::core {
         int get_active_sh_degree() const { return _active_sh_degree; }
         int get_max_sh_degree() const { return _max_sh_degree; }
         float get_scene_scale() const { return _scene_scale; }
-        int64_t size() const { return _means.shape()[0]; }
+        unsigned long size() const { return _means.shape()[0]; }
 
         // Raw tensor access for optimization (inline for performance)
         inline Tensor& means() { return _means; }
@@ -85,6 +85,25 @@ namespace lfs::core {
         inline Tensor& shN_raw() { return _shN; }
         inline const Tensor& shN_raw() const { return _shN; }
 
+        // Gradient accessors (for LibTorch-free optimization)
+        inline Tensor& means_grad() { return _means_grad; }
+        inline const Tensor& means_grad() const { return _means_grad; }
+        inline Tensor& sh0_grad() { return _sh0_grad; }
+        inline const Tensor& sh0_grad() const { return _sh0_grad; }
+        inline Tensor& shN_grad() { return _shN_grad; }
+        inline const Tensor& shN_grad() const { return _shN_grad; }
+        inline Tensor& scaling_grad() { return _scaling_grad; }
+        inline const Tensor& scaling_grad() const { return _scaling_grad; }
+        inline Tensor& rotation_grad() { return _rotation_grad; }
+        inline const Tensor& rotation_grad() const { return _rotation_grad; }
+        inline Tensor& opacity_grad() { return _opacity_grad; }
+        inline const Tensor& opacity_grad() const { return _opacity_grad; }
+
+        // Gradient management
+        void allocate_gradients();
+        void zero_gradients();
+        bool has_gradients() const;
+
         // Utility methods
         void increment_sh_degree();
         void set_active_sh_degree(int sh_degree);
@@ -97,7 +116,17 @@ namespace lfs::core {
         // Get attribute names for the PLY format
         std::vector<std::string> get_attribute_names() const;
 
-        SplatData crop_by_cropbox(const gs::geometry::BoundingBox& bounding_box) const;
+        SplatData crop_by_cropbox(const lfs::geometry::BoundingBox& bounding_box) const;
+
+        /**
+         * @brief Randomly select a subset of splats in-place
+         * @param num_required_splat Amount splats to keep
+         * @param seed Random seed for reproducibility (default: 0)
+         */
+        void random_choose(int num_required_splat, int seed = 0);
+
+        // Convert to point cloud for export (public for testing)
+        PointCloud to_point_cloud() const;
 
     public:
         // Holds the magnitude of the screen space gradient
@@ -108,6 +137,7 @@ namespace lfs::core {
         int _max_sh_degree = 0;
         float _scene_scale = 0.f;
 
+        // Parameters
         Tensor _means;
         Tensor _sh0;
         Tensor _shN;
@@ -115,12 +145,17 @@ namespace lfs::core {
         Tensor _rotation;
         Tensor _opacity;
 
+        // Gradients (for LibTorch-free optimization)
+        Tensor _means_grad;
+        Tensor _sh0_grad;
+        Tensor _shN_grad;
+        Tensor _scaling_grad;
+        Tensor _rotation_grad;
+        Tensor _opacity_grad;
+
         // Async save management
         mutable std::mutex _save_mutex;
         mutable std::vector<std::future<void>> _save_futures;
-
-        // Convert to point cloud for export
-        PointCloud to_point_cloud() const;
 
         // Helper methods for async save management
         void wait_for_saves() const;

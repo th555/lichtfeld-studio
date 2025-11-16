@@ -1,0 +1,291 @@
+/* SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later */
+
+#include "scene/scene.hpp"
+#include "core_new/logger.hpp"
+
+#include <algorithm>
+#include <print>
+#include <ranges>
+#include <numeric> //accumulate
+
+namespace lfs::vis {
+
+    void Scene::addNode(const std::string& name, std::unique_ptr<lfs::core::SplatData> model) {
+        // Calculate gaussian count before moving
+        size_t gaussian_count = static_cast<size_t>(model->size());
+
+        // Check if name already exists
+        auto it = std::find_if(nodes_.begin(), nodes_.end(),
+                               [&name](const Node& node) { return node.name == name; });
+
+        if (it != nodes_.end()) {
+            // Replace existing
+            it->model = std::move(model);
+            it->gaussian_count = gaussian_count;
+        } else {
+            // Add new node
+            Node node{
+                .name = name,
+                .model = std::move(model),
+                .transform = glm::mat4(1.0f),
+                .visible = true,
+                .gaussian_count = gaussian_count};
+            nodes_.push_back(std::move(node));
+        }
+
+        invalidateCache();
+        std::println("Scene: Added node '{}' with {} gaussians", name, gaussian_count);
+    }
+
+    void Scene::removeNode(const std::string& name) {
+        auto it = std::find_if(nodes_.begin(), nodes_.end(),
+                               [&name](const Node& node) { return node.name == name; });
+
+        if (it != nodes_.end()) {
+            nodes_.erase(it);
+            invalidateCache();
+            std::println("Scene: Removed node '{}'", name);
+        }
+    }
+
+    void Scene::setNodeVisibility(const std::string& name, bool visible) {
+        auto it = std::find_if(nodes_.begin(), nodes_.end(),
+                               [&name](const Node& node) { return node.name == name; });
+
+        if (it != nodes_.end() && it->visible != visible) {
+            it->visible = visible;
+            invalidateCache();
+        }
+    }
+
+    void Scene::clear() {
+        nodes_.clear();
+        cached_combined_.reset();
+        cache_valid_ = false;
+    }
+
+    std::pair<std::string, std::string> Scene::cycleVisibilityWithNames() {
+        static constexpr std::pair<const char*, const char*> EMPTY_PAIR = {"", ""};
+
+        if (nodes_.size() <= 1) {
+            return EMPTY_PAIR;
+        }
+
+        std::string hidden_name, shown_name;
+
+        // Find first visible node using modular arithmetic as suggested
+        auto visible = std::find_if(nodes_.begin(), nodes_.end(),
+                                    [](const Node& n) { return n.visible; });
+
+        if (visible != nodes_.end()) {
+            visible->visible = false;
+            hidden_name = visible->name;
+
+            auto next_index = (std::distance(nodes_.begin(), visible) + 1) % nodes_.size();
+            auto next = nodes_.begin() + next_index;
+
+            next->visible = true;
+            shown_name = next->name;
+        } else {
+            // No visible nodes, show first
+            nodes_[0].visible = true;
+            shown_name = nodes_[0].name;
+        }
+
+        invalidateCache();
+        return {hidden_name, shown_name};
+    }
+
+    const lfs::core::SplatData* Scene::getCombinedModel() const {
+        rebuildCacheIfNeeded();
+        return cached_combined_.get();
+    }
+
+    size_t Scene::getTotalGaussianCount() const {
+        size_t total = 0;
+        for (const auto& node : nodes_) {
+            if (node.visible) {
+                total += node.gaussian_count;
+            }
+        }
+        return total;
+    }
+
+    std::vector<const Scene::Node*> Scene::getNodes() const {
+        std::vector<const Node*> result;
+        result.reserve(nodes_.size());
+        for (const auto& node : nodes_) {
+            result.push_back(&node);
+        }
+        return result;
+    }
+
+    std::vector<const Scene::Node*> Scene::getVisibleNodes() const {
+        std::vector<const Node*> visible;
+        for (const auto& node : nodes_) {
+            if (node.visible && node.model) {
+                visible.push_back(&node);
+            }
+        }
+        return visible;
+    }
+
+    const Scene::Node* Scene::getNode(const std::string& name) const {
+        auto it = std::find_if(nodes_.begin(), nodes_.end(),
+                               [&name](const Node& node) { return node.name == name; });
+        return (it != nodes_.end()) ? &(*it) : nullptr;
+    }
+
+    Scene::Node* Scene::getMutableNode(const std::string& name) {
+        auto it = std::find_if(nodes_.begin(), nodes_.end(),
+                               [&name](const Node& node) { return node.name == name; });
+        if (it != nodes_.end()) {
+            invalidateCache();
+            return &(*it);
+        }
+        return nullptr;
+    }
+
+    void Scene::rebuildCacheIfNeeded() const {
+        if (cache_valid_)
+            return;
+
+        // Collect visible models using ranges
+        auto visible_models = nodes_ | std::views::filter([](const auto& node) {
+                                  return node.visible && node.model;
+                              }) |
+                              std::views::transform([](const auto& node) {
+                                  return node.model.get();
+                              }) |
+                              std::ranges::to<std::vector>();
+
+        if (visible_models.empty()) {
+            cached_combined_.reset();
+            cache_valid_ = true;
+            return;
+        }
+
+        // Calculate totals and find max SH degree in one pass
+        struct ModelStats {
+            size_t total_gaussians = 0;
+            int max_sh_degree = 0;
+            float total_scene_scale = 0.0f;
+            bool has_shN = false;
+        };
+
+        auto stats = std::accumulate(
+            visible_models.begin(), visible_models.end(), ModelStats{},
+            [](ModelStats acc, const lfs::core::SplatData* model) {
+                acc.total_gaussians += model->size();
+
+                // Calculate SH degree from shN dimensions
+                int sh_degree = 0;
+                const auto& shN_tensor = model->shN_raw();
+                if (shN_tensor.is_valid() && shN_tensor.ndim() >= 2 && shN_tensor.size(1) > 0) {
+                    int shN_coeffs = static_cast<int>(shN_tensor.size(1));
+                    sh_degree = static_cast<int>(std::round(std::sqrt(shN_coeffs + 1))) - 1;
+                    sh_degree = std::clamp(sh_degree, 0, 3);
+                }
+
+                acc.max_sh_degree = std::max(acc.max_sh_degree, sh_degree);
+                acc.total_scene_scale += model->get_scene_scale();
+                acc.has_shN = acc.has_shN || (shN_tensor.numel() > 0 && shN_tensor.size(1) > 0);
+                return acc;
+            });
+
+        // Get device from first model (all should be on CUDA)
+        lfs::core::Device device = visible_models[0]->means_raw().device();
+
+        // Calculate SH dimensions
+        int sh0_coeffs = 1;
+        int shN_coeffs = (stats.max_sh_degree > 0) ? ((stats.max_sh_degree + 1) * (stats.max_sh_degree + 1) - 1) : 0;
+
+        // Pre-allocate all tensors
+        using lfs::core::Tensor;
+        Tensor means = Tensor::empty({static_cast<size_t>(stats.total_gaussians), 3}, device);
+        Tensor sh0 = Tensor::empty({static_cast<size_t>(stats.total_gaussians), static_cast<size_t>(sh0_coeffs), 3}, device);
+        Tensor shN = (shN_coeffs > 0) ? Tensor::zeros({static_cast<size_t>(stats.total_gaussians), static_cast<size_t>(shN_coeffs), 3}, device) : Tensor::empty({static_cast<size_t>(stats.total_gaussians), 0, 3}, device);
+        Tensor opacity = Tensor::empty({static_cast<size_t>(stats.total_gaussians), 1}, device);
+        Tensor scaling = Tensor::empty({static_cast<size_t>(stats.total_gaussians), 3}, device);
+        Tensor rotation = Tensor::empty({static_cast<size_t>(stats.total_gaussians), 4}, device);
+
+        // Copy data from each model
+        size_t offset = 0;
+        for (const auto* model : visible_models) {
+            const auto size = model->size();
+
+            // Copy each tensor using slice assignment (operator= now properly handles views)
+            means.slice(0, offset, offset + size) = model->means_raw();
+            sh0.slice(0, offset, offset + size) = model->sh0_raw();
+            opacity.slice(0, offset, offset + size) = model->opacity_raw();
+            scaling.slice(0, offset, offset + size) = model->scaling_raw();
+            rotation.slice(0, offset, offset + size) = model->rotation_raw();
+
+            // Copy shN if we have coefficients
+            if (shN_coeffs > 0) {
+                const auto& model_shN = model->shN_raw();
+                int model_shN_coeffs = (model_shN.is_valid() && model_shN.ndim() >= 2) ? static_cast<int>(model_shN.size(1)) : 0;
+
+                if (model_shN_coeffs > 0) {
+                    int coeffs_to_copy = std::min(model_shN_coeffs, shN_coeffs);
+
+                    // Slice in both dimensions: rows and coefficients
+                    shN.slice(0, offset, offset + size).slice(1, 0, coeffs_to_copy) =
+                        model_shN.slice(1, 0, coeffs_to_copy);
+                }
+            }
+
+            offset += size;
+        }
+
+        // Create the combined model
+        cached_combined_ = std::make_unique<lfs::core::SplatData>(
+            stats.max_sh_degree,
+            std::move(means),
+            std::move(sh0),
+            std::move(shN),
+            std::move(scaling),
+            std::move(rotation),
+            std::move(opacity),
+            stats.total_scene_scale / visible_models.size());
+
+        cache_valid_ = true;
+    }
+
+    bool Scene::renameNode(const std::string& old_name, const std::string& new_name) {
+        // Check if new name already exists (case-sensitive)
+        if (old_name == new_name) {
+            return true; // Same name, consider it successful
+        }
+
+        // Check if new name already exists
+        auto existing_it = std::find_if(nodes_.begin(), nodes_.end(),
+                                        [&new_name](const Node& node) {
+                                            return node.name == new_name;
+                                        });
+
+        if (existing_it != nodes_.end()) {
+            LOG_INFO("Scene: Cannot rename '{}' to '{}' - name already exists", old_name, new_name);
+            return false; // Name already exists
+        }
+
+        // Find the node to rename
+        auto it = std::find_if(nodes_.begin(), nodes_.end(),
+                               [&old_name](const Node& node) {
+                                   return node.name == old_name;
+                               });
+
+        if (it != nodes_.end()) {
+            std::string prev_name = it->name;
+            it->name = new_name;
+            invalidateCache();
+            LOG_INFO("Scene: Renamed node '{}' to '{}'", prev_name, new_name);
+            return true;
+        }
+
+        LOG_WARN("Scene: Cannot find node '{}' to rename", old_name);
+        return false;
+    }
+} // namespace lfs::vis

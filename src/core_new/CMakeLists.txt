@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
-#
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# Build the tensor library first
+# ============================================================================
+# core_new module - New LibTorch-free core module with lfs::core namespace
+# ============================================================================
+
+# Add tensor library
 add_subdirectory(tensor)
 
 # Core CUDA kernels library (kmeans, morton encoding)
@@ -34,10 +37,10 @@ set_target_properties(lfs_core_kernels PROPERTIES
 
 # CUDA compiler options for lfs_core_kernels
 target_compile_options(lfs_core_kernels PRIVATE
-    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo -Xcompiler=/Od -Xcompiler=/Z7 -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
-    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:-O3 -use_fast_math --ptxas-options=-v -Xcompiler=/O2 -Xcompiler=/DNDEBUG -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
-    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:GNU>>:-O3 -use_fast_math --ptxas-options=-v>
-    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU>>:-O0 -g -G -lineinfo>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo --extended-lambda --expt-relaxed-constexpr -Xcompiler=/Od -Xcompiler=/Z7 -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:-O3 -use_fast_math --extended-lambda --expt-relaxed-constexpr --ptxas-options=-v -Xcompiler=/O2 -Xcompiler=/DNDEBUG -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:GNU>>:-O3 -use_fast_math --extended-lambda --expt-relaxed-constexpr --ptxas-options=-v>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU>>:-O0 -g -G -lineinfo --extended-lambda --expt-relaxed-constexpr>
 )
 
 # Windows: Add compile definition to tell fmt that UTF-8 is enabled for CUDA files
@@ -113,6 +116,8 @@ target_link_libraries(lfs_core
         lfs_loader      # For CacheLoader used in camera.cpp
     PRIVATE
         taywee::args    # Only used in argument_parser.cpp
+        # NOTE: lfs_training, lfs_visualizer, lfs_project removed - all create circular dependencies
+        # These should be linked at the application level, not in the core library
 )
 
 # Platform-specific settings
@@ -163,7 +168,7 @@ set_target_properties(lfs_core PROPERTIES
 # Configure build type
 function(configure_build_type target)
     get_target_property(target_type ${target} TYPE)
-    
+
     if(target_type STREQUAL "INTERFACE_LIBRARY")
         if(CMAKE_BUILD_TYPE STREQUAL "Debug")
             target_compile_definitions(${target} INTERFACE DEBUG_BUILD)
@@ -181,11 +186,17 @@ endfunction()
 
 configure_build_type(lfs_core)
 
+# Allocation profiling
+if(ENABLE_ALLOCATION_PROFILING)
+    target_compile_definitions(lfs_core PUBLIC ENABLE_ALLOCATION_PROFILING=1)
+    message(STATUS "  • Allocation profiling: ENABLED")
+else()
+    target_compile_definitions(lfs_core PUBLIC ENABLE_ALLOCATION_PROFILING=0)
+    message(STATUS "  • Allocation profiling: DISABLED")
+endif()
+
 message(STATUS "╔════════════════════════════════════════════════════════════════╗")
-message(STATUS "║  lfs_core - Core Application Library                          ║")
+message(STATUS "║  core_new - LibTorch-free Core Module                         ║")
 message(STATUS "╚════════════════════════════════════════════════════════════════╝")
-message(STATUS "  • Core library: C++23 (lfs_core)")
-message(STATUS "  • Tensor library: lfs_tensor (from src/core_new/tensor)")
-message(STATUS "  • Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "  • WebP library: ${WEBP_LIB}")
-message(STATUS "  • Archive library: ${ARCHIVE_LIB}")
+message(STATUS "  • Namespace: lfs::core")
+message(STATUS "  • Tensor library: lfs_tensor")

@@ -14,6 +14,8 @@
 #include <thread>
 #include <vector>
 
+namespace lfs::core {
+
 std::tuple<int, int, int>
 get_image_info(std::filesystem::path p);
 std::tuple<unsigned char*, int, int, int>
@@ -22,15 +24,17 @@ load_image_with_alpha(std::filesystem::path p);
 // Existing functions
 std::tuple<unsigned char*, int, int, int>
 load_image(std::filesystem::path p, int res_div = -1, int max_width = 3840);
-void save_image(const std::filesystem::path& path, lfs::core::Tensor image);
+void save_image(const std::filesystem::path& path, Tensor image);
 void save_image(const std::filesystem::path& path,
-                const std::vector<lfs::core::Tensor>& images,
+                const std::vector<Tensor>& images,
                 bool horizontal = true,
                 int separator_width = 2);
 
 bool save_img_data(const std::filesystem::path& p, const std::tuple<unsigned char*, int, int, int>& image_data);
 
 void free_image(unsigned char* image);
+
+} // namespace lfs::core
 
 // Batch image saving functionality
 namespace lfs::core::image_io {

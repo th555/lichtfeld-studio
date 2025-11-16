@@ -2,6 +2,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include "kernels/ssim.cuh"
 #include <algorithm>
 #include <c10/cuda/CUDAGuard.h>
 #include <cooperative_groups.h>
@@ -507,4 +508,100 @@ fusedssim_backward(
         dm_dsigma12.contiguous().data_ptr<float>());
 
     return dL_dimg1;
+}
+
+// ------------------------------------------
+// Manual SSIM forward (no autograd) - returns (loss_value, context)
+// Matches the interface in include/kernels/ssim.cuh
+// ------------------------------------------
+std::pair<float, SSIMContext> ssim_forward(
+    const torch::Tensor& img1,
+    const torch::Tensor& img2,
+    bool apply_valid_padding) {
+
+    // Constants matching NEW's SSIM kernel
+    constexpr float C1 = 0.01f * 0.01f;
+    constexpr float C2 = 0.03f * 0.03f;
+
+    // Call fused SSIM kernel
+    auto img1_copy = img1.clone();
+    auto img2_copy = img2.clone();
+    auto [ssim_map, dm_dmu1, dm_dsigma1_sq, dm_dsigma12] = fusedssim(C1, C2, img1_copy, img2_copy, true);
+
+    // Store original dimensions
+    int64_t original_h = ssim_map.size(2);
+    int64_t original_w = ssim_map.size(3);
+
+    // Optionally crop borders (5 pixels from each side)
+    torch::Tensor ssim_map_final = ssim_map;
+    if (apply_valid_padding && original_h > 10 && original_w > 10) {
+        ssim_map_final = ssim_map.index({
+            torch::indexing::Slice(),
+            torch::indexing::Slice(),
+            torch::indexing::Slice(5, original_h - 5),
+            torch::indexing::Slice(5, original_w - 5)
+        });
+    }
+
+    // Compute mean SSIM value
+    float ssim_value = ssim_map_final.mean().item<float>();
+
+    // Create context for backward pass
+    SSIMContext ctx;
+    ctx.img1 = img1_copy;
+    ctx.img2 = img2_copy;
+    ctx.dm_dmu1 = dm_dmu1;
+    ctx.dm_dsigma1_sq = dm_dsigma1_sq;
+    ctx.dm_dsigma12 = dm_dsigma12;
+    ctx.original_h = original_h;
+    ctx.original_w = original_w;
+    ctx.apply_valid_padding = apply_valid_padding;
+
+    return {ssim_value, ctx};
+}
+
+// ------------------------------------------
+// Manual SSIM backward (no autograd) - computes gradient w.r.t. img1
+// Matches the interface in include/kernels/ssim.cuh
+// ------------------------------------------
+torch::Tensor ssim_backward(
+    const SSIMContext& ctx,
+    float grad_loss) {
+
+    // Constants matching NEW's SSIM kernel
+    constexpr float C1 = 0.01f * 0.01f;
+    constexpr float C2 = 0.03f * 0.03f;
+
+    // Create gradient tensor for SSIM map
+    // If valid padding was applied, we need to account for cropped region
+    auto dL_dmap = torch::ones_like(ctx.img1);
+
+    if (ctx.apply_valid_padding && ctx.original_h > 10 && ctx.original_w > 10) {
+        // Zero out the border regions that were cropped
+        dL_dmap.zero_();
+        dL_dmap.index_put_({
+            torch::indexing::Slice(),
+            torch::indexing::Slice(),
+            torch::indexing::Slice(5, ctx.original_h - 5),
+            torch::indexing::Slice(5, ctx.original_w - 5)
+        }, torch::ones({dL_dmap.size(0), dL_dmap.size(1),
+                        ctx.original_h - 10, ctx.original_w - 10}, dL_dmap.options()));
+    }
+
+    // Scale by mean reduction factor and input grad_loss
+    int64_t num_elements = ctx.apply_valid_padding && ctx.original_h > 10 && ctx.original_w > 10
+                               ? (ctx.original_h - 10) * (ctx.original_w - 10)
+                               : ctx.original_h * ctx.original_w;
+    float scale = grad_loss / static_cast<float>(num_elements * dL_dmap.size(0) * dL_dmap.size(1));
+    dL_dmap = dL_dmap * scale;
+
+    // Call backward kernel
+    auto img1_copy = ctx.img1.clone();
+    auto img2_copy = ctx.img2.clone();
+    auto dm_dmu1_copy = ctx.dm_dmu1.clone();
+    auto dm_dsigma1_sq_copy = ctx.dm_dsigma1_sq.clone();
+    auto dm_dsigma12_copy = ctx.dm_dsigma12.clone();
+
+    return fusedssim_backward(C1, C2, img1_copy, img2_copy, dL_dmap,
+                              dm_dmu1_copy, dm_dsigma1_sq_copy, dm_dsigma12_copy);
 }

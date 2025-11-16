@@ -82,7 +82,7 @@ namespace lfs::core::tensor_ops {
     }
 
     // Kernel for multinomial sampling with replacement
-    __global__ void multinomial_with_replacement_kernel(const float* weights, int* samples,
+    __global__ void multinomial_with_replacement_kernel(const float* weights, int64_t* samples,
                                                         unsigned long n, unsigned long num_samples,
                                                         float sum, unsigned long long seed) {
         int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -99,12 +99,12 @@ namespace lfs::core::tensor_ops {
         for (unsigned long i = 0; i < n; ++i) {
             cumsum += weights[i];
             if (u <= cumsum) {
-                samples[idx] = i;
+                samples[idx] = static_cast<int64_t>(i);
                 return;
             }
         }
 
-        samples[idx] = n - 1;
+        samples[idx] = static_cast<int64_t>(n - 1);
     }
 
     // Kernel to generate random keys for each index (Gumbel-max trick)
@@ -171,7 +171,7 @@ namespace lfs::core::tensor_ops {
         randint_kernel<<<grid_size, block_size, 0, stream>>>(data, n, low, high, seed);
     }
 
-    void launch_multinomial(const float* weights, int* samples,
+    void launch_multinomial(const float* weights, int64_t* samples,
                             unsigned long n, unsigned long num_samples, bool replacement,
                             unsigned long long seed, cudaStream_t stream) {
         if (n == 0 || num_samples == 0)
@@ -190,7 +190,7 @@ namespace lfs::core::tensor_ops {
         });
 
         if (sum <= 0) {
-            cudaMemsetAsync(samples, 0, num_samples * sizeof(int), stream);
+            cudaMemsetAsync(samples, 0, num_samples * sizeof(int64_t), stream);
             return;
         }
 
@@ -201,7 +201,7 @@ namespace lfs::core::tensor_ops {
                 weights, samples, n, num_samples, sum, seed);
         } else {
             thrust::device_vector<float> keys(n);
-            thrust::device_vector<int> indices(n);
+            thrust::device_vector<int64_t> indices(n);
 
             int block_size = 256;
             int grid_size = (n + block_size - 1) / block_size;

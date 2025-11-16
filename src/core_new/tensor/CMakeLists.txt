@@ -30,6 +30,7 @@ set(LFS_TENSOR_SOURCES
     tensor_masking_ops.cpp     # Masking and indexing operations
     tensor_advanced_ops.cpp    # Advanced operations
     pinned_memory_allocator.cpp # Pinned memory allocator for fast CPU-GPU transfers (used by tensor)
+    offset_allocator.cpp       # OffsetAllocator for O(1) GPU memory sub-allocation
 )
 
 # CUDA sources (limited to C++20)
@@ -76,12 +77,12 @@ if(LFS_TENSOR_CUDA_SOURCES)
 
     target_compile_options(lfs_tensor_kernels PRIVATE
             # CUDA device code + MSVC host compiler flags (Windows only)
-            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo -Xcompiler=/Od -Xcompiler=/Z7 -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
-            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:-O3 -use_fast_math --ptxas-options=-v -Xcompiler=/O2 -Xcompiler=/DNDEBUG -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
+            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo --extended-lambda --expt-relaxed-constexpr -Xcompiler=/Od -Xcompiler=/Z7 -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
+            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:-O3 -use_fast_math --extended-lambda --expt-relaxed-constexpr --ptxas-options=-v -Xcompiler=/O2 -Xcompiler=/DNDEBUG -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
 
             # CUDA device code for non-Windows
-            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo>
-            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3 -use_fast_math --ptxas-options=-v>
+            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo --extended-lambda --expt-relaxed-constexpr>
+            $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3 -use_fast_math --extended-lambda --expt-relaxed-constexpr --ptxas-options=-v>
     )
 
     # Windows: Add compile definition to tell fmt that UTF-8 is enabled for CUDA files
@@ -122,7 +123,7 @@ target_include_directories(lfs_tensor
 
 target_link_libraries(lfs_tensor
         PUBLIC
-        ${TORCH_LIBRARIES}
+        # ${TORCH_LIBRARIES}  # Removed - lfs_tensor is LibTorch-free
         TBB::tbb
         nlohmann_json::nlohmann_json
         glm::glm
@@ -191,6 +192,14 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(lfs_tensor PRIVATE DEBUG_BUILD)
 elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_definitions(lfs_tensor PRIVATE RELEASE_BUILD)
+endif()
+
+# Allocation profiling
+if(ENABLE_ALLOCATION_PROFILING)
+    target_compile_definitions(lfs_tensor PUBLIC ENABLE_ALLOCATION_PROFILING=1)
+    message(STATUS "  • Allocation profiling: ENABLED for lfs_tensor")
+else()
+    target_compile_definitions(lfs_tensor PUBLIC ENABLE_ALLOCATION_PROFILING=0)
 endif()
 
 message(STATUS "╔════════════════════════════════════════════════════════════════╗")

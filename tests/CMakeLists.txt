@@ -13,12 +13,20 @@ find_package(GTest CONFIG REQUIRED)
 set(TEST_SOURCES
     test_main.cpp       # Custom main with pinned memory pre-warming
     test_geometry.cpp
+    test_ssim_kernel_wrapper.cu  # CUDA wrapper for SSIM kernel comparison tests
 )
 
 # Check if new test files exist and add them
 set(OPTIONAL_TEST_FILES
-    test_regularization.cpp
+    test_loss_gradients.cpp
+    test_regularization_comparison.cpp
+    test_add_new_gs_deterministic.cpp
     test_render_modes.cpp
+    test_gut_rasterizer_gradients.cpp
+    test_gut_manual_vs_autograd.cpp
+    test_gut_autograd_vs_manual.cpp
+    test_gut_gradient_comparison.cpp
+    test_activation_gradients.cpp
     test_tensor_basic.cpp
     test_tensor_ops.cpp
     test_tensor_memory.cpp
@@ -41,8 +49,10 @@ set(OPTIONAL_TEST_FILES
     test_tensor_compat.cpp
     test_tensor_cumsum_convenience.cpp
     test_tensor_conversions_shape.cpp
+    test_tensor_reserve_inplace_cat.cpp
     test_kmeans.cpp
     test_critical_fixes.cpp
+    test_cuda_device_state.cpp
     test_tensor_ops_comparison.cpp
     test_sort_minimal.cpp
     test_tensor_debug.cpp
@@ -51,6 +61,11 @@ set(OPTIONAL_TEST_FILES
     test_tensor_move.cpp
     test_mcmc.cpp
     test_loader_comparison.cpp  # Comprehensive comparison between old and new loaders
+    test_ply_loading_comparison.cpp  # PLY loading comparison between legacy and new
+    test_ply_save_comparison.cpp  # PLY saving comparison between legacy and new
+    test_mcmc_add_new_gs_comparison.cpp  # Compare MCMC add_new_gs between legacy and new
+    test_mcmc_relocate_optimizer_state_bug.cpp  # Test optimizer state bug in relocate_gs
+    test_training_debug.cpp     # Training debug module - compare legacy vs new training
     test_tensor_benchmark.cpp
     test_memory_pool_benchmark.cpp  # benchmarks CudaMemoryPool (now internal)
     test_broadcast_benchmark.cpp
@@ -62,8 +77,46 @@ set(OPTIONAL_TEST_FILES
     test_transform_iterator_benchmark.cpp
     test_cub_reduction_benchmark.cpp
     benchmark_strided_tensors.cpp
+    benchmark_grad_alpha_layout.cpp
+    benchmark_background_blend.cpp
     test_scalar_reduction_benchmark.cpp
     test_permute_upload_benchmark.cpp
+    test_lfs_adam_optimizer.cpp
+    test_lfs_scheduler.cpp
+    benchmark_scheduler.cpp
+    test_lfs_losses.cpp
+    benchmark_losses.cpp
+    test_mcmc_kernels.cpp
+    test_mcmc_strategy.cpp
+    test_tensor_bool.cpp
+    test_dataloader_lfs.cpp
+    test_bilateral_grid.cpp
+    test_sparsity_optimizer.cpp
+    test_sparsity_debug.cpp
+    test_default_strategy.cpp
+    test_default_strategy_comparison.cpp
+    benchmark_default_strategy.cpp
+    test_default_strategy_operations_comparison.cpp
+    test_default_strategy_real_conditions.cpp
+    test_dtype_operations_comprehensive.cpp
+    test_tensor_bugs.cpp
+    test_densification_performance.cpp
+    test_densification_old_vs_new.cpp
+    test_densification_profile.cpp
+    # Merged test files for better organization
+    test_bug_regressions.cpp        # Bug regressions (binary_search, index_select, minimal_tensor)
+    test_torch_comparisons.cpp      # LibTorch comparisons (naive_split, split_kernel, fill)
+    test_densification.cpp          # Densification tests (exact_pattern, lfs_only, benchmarks, 10M tests)
+    test_mcmc_logit_verification.cpp  # Verify log/logit operations match between legacy and new
+    test_metrics_comparison.cpp  # Compare old and new metrics implementations (PSNR, SSIM, no LPIPS in new)
+    test_tensor_reserve_capacity.cpp  # Test tensor reserve() and capacity management
+    test_tensor_cat_inplace.cpp  # Test in-place cat() optimization
+    test_tensor_inplace_cat_debug.cpp  # Debug tests for in-place cat() crash
+    test_tensor_slice_assignment_reserve.cpp  # Test reserve + cat as alternative to in-place slice assignment
+    test_tensor_mcmc_memory_profile.cpp  # MCMC-style memory profiling with huge tensors
+    test_mcmc_tensor_ops.cpp        # Comprehensive MCMC tensor operation tests (nonzero, multinomial, index_select)
+    test_mcmc_memory_ops.cpp        # Consolidated: append_gather, in-place cat, memory leak detection for MCMC
+    test_mcmc_critical_bugs.cpp     # Critical MCMC bugs: Adam add_new_params, inject_noise, cat self-ref, index_add_ int64
 )
 
 foreach(TEST_FILE ${OPTIONAL_TEST_FILES})
@@ -88,10 +141,13 @@ set_target_properties(lichtfeld_tests PROPERTIES
 )
 
 # Include directories
+# NOTE: Order matters! We want tests to explicitly choose old vs new headers
 target_include_directories(lichtfeld_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_BINARY_DIR}/include
     ${CMAKE_SOURCE_DIR}/tests
+    ${CMAKE_SOURCE_DIR}/src/training_new  # New libtorch-free (for test_lfs_*.cpp)
+    ${CMAKE_SOURCE_DIR}/src               # Old torch-based (for existing tests)
     ${CUDAToolkit_INCLUDE_DIRS}
     ${OPENGL_INCLUDE_DIRS}
 )
@@ -115,10 +171,15 @@ target_link_libraries(lichtfeld_tests PRIVATE
     gs_kernels
 
     # New torch-free modules (for comparison tests)
+    lfs_visualizer
+    lfs_rendering
     lfs_training
-    lfs_core
-    lfs_loader  # After lfs_core since lfs_core depends on lfs_loader
+    lfs_project   # Before lfs_loader (lfs_loader uses lfs_project functions)
+    lfs_core      # Before lfs_geometry (lfs_core depends on lfs_geometry)
+    lfs_geometry  # After lfs_core - provides EuclideanTransform
+    lfs_loader  # After lfs_project and lfs_core
     lfs_tensor
+    lfs_project   # Second pass - lfs_loader depends on lfs_project
 
     # Backend libraries
     gsplat_backend
@@ -161,6 +222,8 @@ add_custom_target(run_tests
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running all tests with verbose output"
 )
+
+# Note: Profiling executables removed during test cleanup
 
 # Platform-specific settings
 if(WIN32)

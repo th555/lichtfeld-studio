@@ -2,27 +2,121 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# lfs_training - Training module (header-only for now, just dataset.hpp)
-add_library(lfs_training INTERFACE)
+# Add fastlfs backend
+add_subdirectory(fastgs)
+
+# LibTorch-free CUDA kernels
+set(LFS_TRAINING_KERNEL_SOURCES
+    kernels/ssim.cu
+    kernels/l1_loss.cu
+    kernels/ssim_reduction.cu
+    kernels/regularization.cu
+    kernels/bilateral_grid_forward.cu
+    kernels/bilateral_grid_backward.cu
+    kernels/bilateral_grid_tv.cu
+    kernels/mcmc_kernels.cu
+    kernels/densification_kernels.cu
+    kernels/grad_alpha.cu
+    components/sparsity_optimizer_kernels.cu
+)
+
+# Create CUDA kernels library
+add_library(lfs_training_kernels STATIC ${LFS_TRAINING_KERNEL_SOURCES})
+
+target_include_directories(lfs_training_kernels
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(lfs_training_kernels
+    PUBLIC
+        lfs_tensor       # For lfs::core::Tensor
+        CUDA::cudart
+)
+
+set_target_properties(lfs_training_kernels PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    POSITION_INDEPENDENT_CODE ON
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+
+# CUDA compiler options for lfs_training_kernels
+target_compile_options(lfs_training_kernels PRIVATE
+    # CUDA device code + MSVC host compiler flags (Windows only)
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo --extended-lambda --expt-relaxed-constexpr -Xcompiler=/Od -Xcompiler=/Z7 -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:-O3 -use_fast_math --extended-lambda --expt-relaxed-constexpr --ptxas-options=-v -Xcompiler=/O2 -Xcompiler=/DNDEBUG -Xcompiler=/utf-8 -Xcompiler=/D_CRT_SECURE_NO_WARNINGS --diag-suppress=27>
+
+    # CUDA device code for non-Windows
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Debug>>:-O0 -g -G -lineinfo --extended-lambda --expt-relaxed-constexpr>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-O3 -use_fast_math --extended-lambda --expt-relaxed-constexpr --ptxas-options=-v>
+)
+
+if(MSVC)
+    target_compile_definitions(lfs_training_kernels PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:FMT_UNICODE=0>
+    )
+endif()
+# Optimizer sources
+set(TRAINING_NEW_SOURCES
+    optimizer/adam_optimizer.cpp
+    optimizer/scheduler.cpp
+    losses/regularization.cpp
+    losses/photometric_loss.cpp
+    strategies/strategy_utils.cpp
+    strategies/default_strategy.cpp
+    strategies/mcmc.cpp
+    rasterization/fast_rasterizer.cpp
+    # components/bilateral_grid.cpp           # Temporarily disabled - requires LibTorch
+    # components/sparsity_optimizer.cpp       # Temporarily disabled - requires LibTorch
+    metrics/metrics.cpp
+    trainer.cpp
+    training_setup.cpp
+)
+
+# lfs_training - Training module with optimizer
+add_library(lfs_training STATIC ${TRAINING_NEW_SOURCES})
 
 target_include_directories(lfs_training
-    INTERFACE
+    PUBLIC
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/src                   # For old training components (TODO: port)
+        ${CMAKE_SOURCE_DIR}/src/training          # For old training components (TODO: port)
+        ${CMAKE_SOURCE_DIR}/src/training/fastgs  # For adam_api.h (old)
+        ${CMAKE_CURRENT_SOURCE_DIR}/fastgs/rasterization/include  # For rasterization_api.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/fastgs/optimizer/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/fastgs/utils
 )
 
 # Link dependencies
 target_link_libraries(lfs_training
-    INTERFACE
-        lfs_core    # Depends on new core module
+    PUBLIC
+        lfs_core                # Depends on new core module (SplatData, Tensor)
+        lfs_training_kernels    # LibTorch-free SSIM kernels
+        fastlfs_backend         # For adam_step_raw CUDA kernel (LibTorch-free)
+        # gs_training_kernels     # Temporarily disabled - requires LibTorch
+        # gs_training             # Temporarily disabled - requires LibTorch
+        # gs_core                 # Temporarily disabled - requires LibTorch
+        # gs_loader               # Temporarily disabled - requires LibTorch
+        # gs_project              # Replaced by lfs_project (LibTorch-free)
+        # ${TORCH_LIBRARIES}      # Temporarily disabled to achieve torch-free build
 )
 
 # Set C++ standard
-target_compile_features(lfs_training INTERFACE cxx_std_23)
+set_target_properties(lfs_training PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    POSITION_INDEPENDENT_CODE ON
+)
 
 message(STATUS "╔════════════════════════════════════════════════════════════════╗")
-message(STATUS "║  lfs_training - Training Dataset Module (Header-only)         ║")
+message(STATUS "║  lfs_training - Training Module with Optimizer & Losses       ║")
 message(STATUS "╚════════════════════════════════════════════════════════════════╝")
-message(STATUS "  • Contains: dataset.hpp")
+message(STATUS "  • Contains: AdamOptimizer, LR Schedulers, Losses (LibTorch-free API)")
 message(STATUS "  • Namespace: lfs::training")
+message(STATUS "  • Uses: CUDA kernels from gs_training_kernels, fastgs_backend")

@@ -120,6 +120,48 @@ namespace gs::training {
 
         bool is_initialized() const override { return initialized_; }
 
+        // Test/comparison helpers - wrap around compute_loss() to match new API signature
+        // Context type for forward pass (includes internal state for debugging)
+        struct ComputeLossContext {
+            torch::Tensor opacities_with_grad;
+            torch::Tensor opa_sigmoid;  // sigmoid(opacities) for debugging
+            torch::Tensor z;  // z variable for debugging
+            torch::Tensor u;  // u variable for debugging
+        };
+
+        std::expected<std::pair<torch::Tensor, ComputeLossContext>, std::string>
+        compute_loss_forward(const torch::Tensor& opacities) const {
+            auto opacities_with_grad = opacities.requires_grad_(true);
+            auto loss_result = compute_loss(opacities_with_grad);
+            if (!loss_result.has_value()) {
+                return std::unexpected(loss_result.error());
+            }
+            // Populate context with internal state for debugging
+            auto opa_sigmoid = torch::sigmoid(opacities_with_grad);
+            ComputeLossContext ctx{opacities_with_grad, opa_sigmoid, z_, u_};
+            return std::make_pair(loss_result.value(), ctx);
+        }
+
+        std::expected<torch::Tensor, std::string>
+        compute_loss_backward(const ComputeLossContext& ctx, float grad_loss) const {
+            // Recompute loss to build computation graph
+            auto loss_result = compute_loss(ctx.opacities_with_grad);
+            if (!loss_result.has_value()) {
+                return std::unexpected(loss_result.error());
+            }
+
+            // Clear any existing gradients
+            if (ctx.opacities_with_grad.grad().defined()) {
+                ctx.opacities_with_grad.grad().zero_();
+            }
+
+            // Backward pass
+            auto loss = loss_result.value();
+            loss.backward(torch::tensor(grad_loss, loss.options()));
+
+            return ctx.opacities_with_grad.grad();
+        }
+
     private:
         /**
          * @brief Apply soft thresholding to enforce sparsity

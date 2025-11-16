@@ -228,7 +228,7 @@ namespace gs::loader {
 
     void CacheLoader::evict_until_satisfied() {
 
-        while (!cpu_cache_.empty()) {
+        while (true) {
             std::size_t available = get_available_physical_memory();
             std::size_t total = get_total_physical_memory();
             std::size_t min_free_bytes = std::max(
@@ -240,10 +240,22 @@ namespace gs::loader {
             }
             {
                 std::lock_guard<std::mutex> lock(cpu_cache_mutex_);
+
+                // Check if cache is empty AFTER acquiring lock (race condition fix)
+                if (cpu_cache_.empty()) {
+                    break;
+                }
+
                 auto oldest = std::min_element(cpu_cache_.begin(), cpu_cache_.end(),
                                                [](const auto& a, const auto& b) {
                                                    return a.second.last_access < b.second.last_access;
                                                });
+
+                // Safety check: min_element returns end() if container is empty
+                if (oldest == cpu_cache_.end()) {
+                    break;
+                }
+
                 LOG_DEBUG("Evicting cached image {} ({} bytes) from CPU cache",
                           oldest->first, oldest->second.size_bytes);
                 cpu_cache_.erase(oldest);
@@ -253,17 +265,21 @@ namespace gs::loader {
 
     void CacheLoader::evict_if_needed(std::size_t required_bytes) {
         // LRU eviction: remove least recently accessed images until we have space
+        // NOTE: This function MUST be called with cpu_cache_mutex_ held!
         while (!cpu_cache_.empty() && !has_sufficient_memory(required_bytes)) {
             auto oldest = std::min_element(cpu_cache_.begin(), cpu_cache_.end(),
                                            [](const auto& a, const auto& b) {
                                                return a.second.last_access < b.second.last_access;
                                            });
 
+            // Safety check: min_element returns end() if container is empty
             if (oldest != cpu_cache_.end()) {
                 LOG_DEBUG("Evicting cached image {} ({} bytes) from CPU cache",
                           oldest->first, oldest->second.size_bytes);
                 cpu_cache_.erase(oldest);
             } else {
+                // This shouldn't happen since we check !cpu_cache_.empty() in loop condition
+                LOG_WARN("evict_if_needed: min_element returned end() despite non-empty cache check");
                 break;
             }
         }
@@ -301,7 +317,7 @@ namespace gs::loader {
                 unsigned char* img_data = static_cast<unsigned char*>(std::malloc(cached.data.size()));
                 std::memcpy(img_data, cached.data.data(), cached.data.size());
 
-                LOG_DEBUG("Loaded image {} from CPU cache", cache_key);
+                //LOG_DEBUG("Loaded image {} from CPU cache", cache_key);
                 return {img_data, cached.width, cached.height, cached.channels};
             }
         }

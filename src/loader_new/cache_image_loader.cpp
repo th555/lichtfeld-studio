@@ -5,7 +5,8 @@
 #include "loader_new/cache_image_loader.hpp"
 #include "core_new/image_io.hpp"
 #include "core_new/logger.hpp"
-#include "project/project.hpp"
+#include "core_new/tensor.hpp"
+#include "project_new/project.hpp"
 
 #include <fstream>
 
@@ -134,23 +135,43 @@ namespace lfs::loader {
             return;
         }
 
-        auto cache_base = gs::management::GetLichtFeldBaseTemporaryFolder() / "cache";
+        auto cache_base = lfs::project::GetLichtFeldBaseTemporaryFolder() / "cache";
+        std::string unique_cache_path = LFS_CACHE_PREFIX + lfs::project::generateShortHash();
+        std::filesystem::path cache_folder = cache_base / unique_cache_path;
 
-        if (!std::filesystem::exists(cache_base)) {
-            bool success = std::filesystem::create_directories(cache_base);
-            if (!success) {
-                throw std::runtime_error("failed to create cache base directory " + cache_base.string());
+        std::error_code ec;
+
+        // Check if parent path exists and is valid
+        if (!std::filesystem::exists(cache_base.parent_path())) {
+            LOG_ERROR("Cache base path does not exist: {}. Disabling filesystem cache.",
+                      cache_base.parent_path().string());
+            use_fs_cache_ = false;
+            return;
+        }
+
+        // If cache folder already exists, wipe it
+        if (std::filesystem::exists(cache_folder)) {
+            LOG_DEBUG("Cache folder {} already exists, wiping it", cache_folder.string());
+            std::filesystem::remove_all(cache_folder, ec);
+            if (ec) {
+                LOG_ERROR("Failed to wipe existing cache folder {}: {}. Disabling filesystem cache.",
+                          cache_folder.string(), ec.message());
+                use_fs_cache_ = false;
+                return;
             }
         }
 
-        std::string unique_cache_path = LFS_CACHE_PREFIX + gs::management::generateShortHash();
-        std::filesystem::path cache_folder = cache_base / unique_cache_path;
-
-        bool success = std::filesystem::create_directories(cache_folder);
-        if (!success) {
-            throw std::runtime_error("failed to create cache directory " + cache_folder.string());
+        // Create the cache folder
+        std::filesystem::create_directories(cache_folder, ec);
+        if (ec) {
+            LOG_ERROR("Failed to create cache directory {}: {}. Disabling filesystem cache.",
+                      cache_folder.string(), ec.message());
+            use_fs_cache_ = false;
+            return;
         }
+
         cache_folder_ = cache_folder;
+        LOG_DEBUG("Created cache directory: {}", cache_folder.string());
     }
 
     void CacheLoader::reset_cache() {
@@ -163,7 +184,7 @@ namespace lfs::loader {
     }
 
     void CacheLoader::clean_cache_folders() {
-        auto cache_base = gs::management::GetLichtFeldBaseTemporaryFolder() / "cache";
+        auto cache_base = lfs::project::GetLichtFeldBaseTemporaryFolder() / "cache";
         if (!std::filesystem::exists(cache_base) || !std::filesystem::is_directory(cache_base)) {
             LOG_ERROR("Invalid base folder: {}", cache_base.string());
             return;
@@ -262,9 +283,11 @@ namespace lfs::loader {
         return std::format("{}:resize_{}_maxw_{}", path.string(), params.resize_factor, params.max_width);
     }
 
-    std::tuple<unsigned char*, int, int, int> CacheLoader::load_cached_image_from_cpu(
+    lfs::core::Tensor CacheLoader::load_cached_image_from_cpu(
         const std::filesystem::path& path,
         const LoadParams& params) {
+
+        using namespace lfs::core;
 
         std::string cache_key = generate_cache_key(path, params);
 
@@ -276,14 +299,8 @@ namespace lfs::loader {
                 // Update last access time
                 it->second.last_access = std::chrono::steady_clock::now();
 
-                // Allocate new memory and copy cached data
-                auto& cached = it->second;
-                // allocation should be like load_img since use call img_free
-                unsigned char* img_data = static_cast<unsigned char*>(std::malloc(cached.data.size()));
-                std::memcpy(img_data, cached.data.data(), cached.data.size());
-
-                LOG_DEBUG("Loaded image {} from CPU cache", cache_key);
-                return {img_data, cached.width, cached.height, cached.channels};
+                // Return a copy of the cached tensor
+                return it->second.tensor->clone();
             }
         }
 
@@ -299,15 +316,29 @@ namespace lfs::loader {
             }
         }
 
-        // If another thread is loading, fall back to direct load
-
+        // If another thread is loading, fall back to direct load and preprocess
         if (is_image_being_loaded) {
             LOG_DEBUG("Image {} is being loaded by another thread, loading directly", cache_key);
-            return load_image(path, params.resize_factor, params.max_width);
+            auto [img_data, width, height, channels] = load_image(path, params.resize_factor, params.max_width);
+
+            // Create tensor from uint8 [H,W,C]
+            auto tensor = Tensor::from_blob(
+                img_data,
+                TensorShape({static_cast<size_t>(height), static_cast<size_t>(width), static_cast<size_t>(channels)}),
+                Device::CPU,
+                DataType::UInt8);
+
+            // Convert and permute to float32 [C,H,W]
+            tensor = tensor.to(DataType::Float32) / 255.0f;
+            tensor = tensor.permute({2, 0, 1}).contiguous();
+
+            // Free original data
+            free_image(img_data);
+
+            return tensor;
         }
 
         // Load the image
-
         auto [img_data, width, height, channels] = load_image(path, params.resize_factor, params.max_width);
 
         if (img_data == nullptr) {
@@ -316,35 +347,48 @@ namespace lfs::loader {
             throw std::runtime_error("Failed to load image: " + path.string());
         }
 
-        // Calculate image size
-        std::size_t img_size = static_cast<std::size_t>(width) * height * channels;
+        // Create tensor from uint8 [H,W,C] and preprocess
+        auto tensor = Tensor::from_blob(
+            img_data,
+            TensorShape({static_cast<size_t>(height), static_cast<size_t>(width), static_cast<size_t>(channels)}),
+            Device::CPU,
+            DataType::UInt8);
 
-        // Try to cache the image in CPU memory
+        // Convert and permute to float32 [C,H,W]
+        tensor = tensor.to(DataType::Float32) / 255.0f;
+        tensor = tensor.permute({2, 0, 1}).contiguous();
+
+        // Free original uint8 data
+        free_image(img_data);
+
+        // Calculate tensor size (in bytes)
+        std::size_t tensor_bytes = tensor.numel() * sizeof(float);
+
+        // Try to cache the preprocessed tensor in CPU memory
         {
             std::lock_guard<std::mutex> lock(cpu_cache_mutex_);
 
-            // Check if we have sufficient memory
-            if (has_sufficient_memory(img_size)) {
+            // Check if we have sufficient memory for preprocessed tensor
+            if (has_sufficient_memory(tensor_bytes)) {
                 // Evict old entries if needed
-                evict_if_needed(img_size);
+                evict_if_needed(tensor_bytes);
 
-                // Store in cache
+                // Store preprocessed tensor in cache
                 CachedImageData cached_data;
-                cached_data.data.resize(img_size);
-                std::memcpy(cached_data.data.data(), img_data, img_size);
+                cached_data.tensor = std::make_shared<Tensor>(tensor.clone());  // Store a copy in shared_ptr
                 cached_data.width = width;
                 cached_data.height = height;
                 cached_data.channels = channels;
-                cached_data.size_bytes = img_size;
+                cached_data.size_bytes = tensor_bytes;
                 cached_data.last_access = std::chrono::steady_clock::now();
 
                 cpu_cache_[cache_key] = std::move(cached_data);
 
-                LOG_DEBUG("Cached image {} in CPU memory ({} bytes, total cache: {} bytes)",
-                          cache_key, img_size, get_cpu_cache_size());
+                LOG_DEBUG("Cached preprocessed tensor {} in CPU memory ({} bytes, total cache: {} bytes)",
+                          cache_key, tensor_bytes, get_cpu_cache_size());
             } else {
-                LOG_DEBUG("Insufficient memory to cache image {} ({} bytes required)",
-                          cache_key, img_size);
+                LOG_DEBUG("Insufficient memory to cache preprocessed tensor {} ({} bytes required)",
+                          cache_key, tensor_bytes);
             }
 
             image_being_loaded_cpu_.erase(cache_key);
@@ -352,12 +396,25 @@ namespace lfs::loader {
 
         evict_until_satisfied();
 
-        return {img_data, width, height, channels};
+        return tensor;
     }
 
-    std::tuple<unsigned char*, int, int, int> CacheLoader::load_cached_image_from_fs(const std::filesystem::path& path, const LoadParams& params) {
+    lfs::core::Tensor CacheLoader::load_cached_image_from_fs(const std::filesystem::path& path, const LoadParams& params) {
+        using namespace lfs::core;
+
         if (cache_folder_.empty()) {
-            return load_image(path, params.resize_factor, params.max_width);
+            auto [data, width, height, channels] = load_image(path, params.resize_factor, params.max_width);
+
+            // Create tensor and preprocess
+            auto tensor = Tensor::from_blob(
+                data,
+                TensorShape({static_cast<size_t>(height), static_cast<size_t>(width), static_cast<size_t>(channels)}),
+                Device::CPU,
+                DataType::UInt8);
+            tensor = tensor.to(DataType::Float32) / 255.0f;
+            tensor = tensor.permute({2, 0, 1}).contiguous();
+            free_image(data);
+            return tensor;
         }
 
         std::string unique_name = std::format("rf_{}_mw_{}_", params.resize_factor, params.max_width) + path.filename().string();
@@ -400,7 +457,17 @@ namespace lfs::loader {
             }
         }
 
-        return result;
+        // Preprocess the loaded image
+        auto [data, width, height, channels] = result;
+        auto tensor = Tensor::from_blob(
+            data,
+            TensorShape({static_cast<size_t>(height), static_cast<size_t>(width), static_cast<size_t>(channels)}),
+            Device::CPU,
+            DataType::UInt8);
+        tensor = tensor.to(DataType::Float32) / 255.0f;
+        tensor = tensor.permute({2, 0, 1}).contiguous();
+        free_image(data);
+        return tensor;
     }
 
     void CacheLoader::determine_cache_mode(const std::filesystem::path& path, const LoadParams& params) {
@@ -424,9 +491,9 @@ namespace lfs::loader {
             }
             clear_cpu_cache(); // cache does not suppose to be occupied
 
-            auto [img_data, width, height, channels] = load_image(path, params.resize_factor, params.max_width);
+            auto [img_data, width, height, channels] = lfs::core::load_image(path, params.resize_factor, params.max_width);
 
-            free_image(img_data);
+            lfs::core::free_image(img_data);
 
             std::size_t img_size = static_cast<std::size_t>(width) * height * channels;
             std::size_t required_bytes = img_size * num_expected_images_;
@@ -444,7 +511,7 @@ namespace lfs::loader {
                     LOG_INFO("skip cpu memory cache by user");
                 }
 
-                auto [org_width, org_height, org_channels] = get_image_info(path);
+                auto [org_width, org_height, org_channels] = lfs::core::get_image_info(path);
                 if (use_fs_cache_ && (params.resize_factor > 1 || params.max_width < org_width)) {
                     LOG_INFO("Images are preprocessed. Changing Cache to FS Mode");
                     cache_mode_ = CacheMode::FileSystem;
@@ -460,7 +527,9 @@ namespace lfs::loader {
         }
     }
 
-    std::tuple<unsigned char*, int, int, int> CacheLoader::load_cached_image(const std::filesystem::path& path, const LoadParams& params) {
+    lfs::core::Tensor CacheLoader::load_cached_image(const std::filesystem::path& path, const LoadParams& params) {
+        using namespace lfs::core;
+
         determine_cache_mode(path, params);
 
         if (use_cpu_memory_ && cache_mode_ == CacheMode::CPU_memory) {
@@ -471,7 +540,17 @@ namespace lfs::loader {
             return load_cached_image_from_fs(path, params);
         }
 
-        return load_image(path, params.resize_factor, params.max_width);
+        // No cache - load and preprocess directly
+        auto [data, width, height, channels] = load_image(path, params.resize_factor, params.max_width);
+        auto tensor = Tensor::from_blob(
+            data,
+            TensorShape({static_cast<size_t>(height), static_cast<size_t>(width), static_cast<size_t>(channels)}),
+            Device::CPU,
+            DataType::UInt8);
+        tensor = tensor.to(DataType::Float32) / 255.0f;
+        tensor = tensor.permute({2, 0, 1}).contiguous();
+        free_image(data);
+        return tensor;
     }
 
     void CacheLoader::print_cache_status() const {
@@ -488,11 +567,11 @@ namespace lfs::loader {
             double memory_ratio = get_memory_usage_ratio();
             double cache_ratio = (double)get_cpu_cache_size() / (double)get_total_physical_memory();
 
-            LOG_INFO("CacheInfo: Num images in cache {}", cpu_cache_.size());
-            LOG_INFO("CacheInfo: total memory {:.2f}GB", total_memory_gb);
-            LOG_INFO("CacheInfo: used memory {:.2f}%", 100 * memory_ratio);
-            LOG_INFO("CacheInfo: cache memory occupancy {:.2f}%", 100 * cache_ratio);
-            LOG_INFO("*****"); // seperator
+            LOG_TRACE("CacheInfo: Num images in cache {}", cpu_cache_.size());
+            LOG_TRACE("CacheInfo: total memory {:.2f}GB", total_memory_gb);
+            LOG_TRACE("CacheInfo: used memory {:.2f}%", 100 * memory_ratio);
+            LOG_TRACE("CacheInfo: cache memory occupancy {:.2f}%", 100 * cache_ratio);
+            LOG_TRACE("*****"); // seperator
         }
     }
 

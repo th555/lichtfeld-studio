@@ -7,6 +7,7 @@
 #include "core_new/parameters.hpp"
 #include "core_new/point_cloud.hpp"
 #include "core_new/sogs.hpp"
+#include "geometry_new/bounding_box.hpp"
 #include "external/nanoflann.hpp"
 #include "external/tinyply.hpp"
 #include <iostream>
@@ -20,7 +21,9 @@
 #include <future>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <numeric> // for std::iota
 #include <print>
+#include <random> // for std::mt19937
 #include <string>
 #include <thread>
 #include <vector>
@@ -131,15 +134,47 @@ namespace {
         }
 
         if (pc.sh0.is_valid()) {
-            // _sh0 is [N, 1, 3] - transpose to [N, 3, 1] for PLY flatten, then flatten to [N, 3]
-            auto sh0_transposed = pc.sh0.transpose(1, 2).contiguous();
-            tensors.push_back(sh0_transposed.flatten(1).cpu().contiguous());
+            LOG_INFO("write_ply_impl: pc.sh0 shape: ndim={}, shape=[{}{}{}]",
+                     pc.sh0.ndim(),
+                     pc.sh0.shape()[0],
+                     pc.sh0.ndim() >= 2 ? fmt::format(", {}", pc.sh0.shape()[1]) : "",
+                     pc.sh0.ndim() >= 3 ? fmt::format(", {}", pc.sh0.shape()[2]) : "");
+
+            if (pc.sh0.ndim() == 3) {
+                // sh0 is [N, B, 3] - transpose to [N, 3, B], then flatten to [N, 3*B]
+                LOG_INFO("write_ply_impl: sh0 is 3D, transposing and flattening");
+                auto sh0_transposed = pc.sh0.transpose(1, 2).contiguous();
+                tensors.push_back(sh0_transposed.flatten(1).cpu().contiguous());
+            } else if (pc.sh0.ndim() == 2) {
+                // sh0 is already [N, 3*B] - use as-is
+                LOG_INFO("write_ply_impl: sh0 is 2D, using as-is");
+                tensors.push_back(pc.sh0.cpu().contiguous());
+            } else {
+                LOG_ERROR("write_ply_impl: Unexpected sh0 ndim: {}", pc.sh0.ndim());
+                tensors.push_back(pc.sh0.cpu().contiguous());
+            }
         }
 
         if (pc.shN.is_valid()) {
-            // _shN is [N, coeffs, 3] - transpose to [N, 3, coeffs], then flatten to [N, 3*coeffs]
-            auto shN_transposed = pc.shN.transpose(1, 2).contiguous();
-            tensors.push_back(shN_transposed.flatten(1).cpu().contiguous());
+            LOG_INFO("write_ply_impl: pc.shN shape: ndim={}, shape=[{}{}{}]",
+                     pc.shN.ndim(),
+                     pc.shN.shape()[0],
+                     pc.shN.ndim() >= 2 ? fmt::format(", {}", pc.shN.shape()[1]) : "",
+                     pc.shN.ndim() >= 3 ? fmt::format(", {}", pc.shN.shape()[2]) : "");
+
+            if (pc.shN.ndim() == 3) {
+                // shN is [N, B, 3] - transpose to [N, 3, B], then flatten to [N, 3*B]
+                LOG_INFO("write_ply_impl: shN is 3D, transposing and flattening");
+                auto shN_transposed = pc.shN.transpose(1, 2).contiguous();
+                tensors.push_back(shN_transposed.flatten(1).cpu().contiguous());
+            } else if (pc.shN.ndim() == 2) {
+                // shN is already [N, 3*B] - use as-is
+                LOG_INFO("write_ply_impl: shN is 2D, using as-is");
+                tensors.push_back(pc.shN.cpu().contiguous());
+            } else {
+                LOG_ERROR("write_ply_impl: Unexpected shN ndim: {}", pc.shN.ndim());
+                tensors.push_back(pc.shN.cpu().contiguous());
+            }
         }
 
         if (pc.opacity.is_valid()) {
@@ -242,7 +277,7 @@ namespace lfs::core {
                          Tensor opacity_,
                          float scene_scale_)
         : _max_sh_degree(sh_degree),
-          _active_sh_degree(0),  // Start at 0, increases during training to match old behavior
+          _active_sh_degree(0), // Start at 0, increases during training to match old behavior
           _scene_scale(scene_scale_),
           _means(std::move(means_)),
           _sh0(std::move(sh0_)),
@@ -311,6 +346,7 @@ namespace lfs::core {
         // Normalize quaternions along the last dimension
         // _rotation is [N, 4], we want to normalize each quaternion
         // norm = sqrt(sum(x^2)) along dim=1, keepdim=true to get [N, 1]
+
         auto squared = _rotation.square();
         auto sum_squared = squared.sum({1}, true);    // [N, 1]
         auto norm = sum_squared.sqrt();               // [N, 1]
@@ -440,34 +476,54 @@ namespace lfs::core {
     std::vector<std::string> SplatData::get_attribute_names() const {
         std::vector<std::string> a{"x", "y", "z", "nx", "ny", "nz"};
 
-        // _sh0 attributes: [N, 3, 1] -> 3 features
+        // _sh0 attributes - calculate based on actual dimensionality
         if (_sh0.is_valid()) {
-            size_t sh0_features = _sh0.size(1) * _sh0.size(2);
+            size_t sh0_features;
+            if (_sh0.ndim() == 3) {
+                // 3D: [N, B, 3] -> B*3 features
+                sh0_features = _sh0.shape()[1] * _sh0.shape()[2];
+            } else if (_sh0.ndim() == 2) {
+                // 2D: [N, 3*B] -> size(1) features
+                sh0_features = _sh0.shape()[1];
+            } else {
+                LOG_ERROR("Unexpected sh0 ndim in get_attribute_names: {}", _sh0.ndim());
+                sh0_features = 3; // fallback
+            }
             for (size_t i = 0; i < sh0_features; ++i) {
                 a.emplace_back("f_dc_" + std::to_string(i));
             }
         }
 
-        // _shN attributes: [N, 3, coeffs]
+        // _shN attributes - calculate based on actual dimensionality
         if (_shN.is_valid()) {
-            size_t shN_features = _shN.size(1) * _shN.size(2);
+            size_t shN_features;
+            if (_shN.ndim() == 3) {
+                // 3D: [N, B, 3] -> B*3 features
+                shN_features = _shN.shape()[1] * _shN.shape()[2];
+            } else if (_shN.ndim() == 2) {
+                // 2D: [N, 3*B] -> size(1) features
+                shN_features = _shN.shape()[1];
+            } else {
+                LOG_ERROR("Unexpected shN ndim in get_attribute_names: {}", _shN.ndim());
+                shN_features = 45; // fallback for degree 3
+            }
             for (size_t i = 0; i < shN_features; ++i) {
                 a.emplace_back("f_rest_" + std::to_string(i));
             }
         }
 
-        a.emplace_back("_opacity");
+        a.emplace_back("opacity");  // Fixed: removed underscore to match legacy
 
         // _scaling attributes
         if (_scaling.is_valid()) {
-            for (size_t i = 0; i < _scaling.size(1); ++i) {
+            for (size_t i = 0; i < _scaling.shape()[1]; ++i) {
                 a.emplace_back("scale_" + std::to_string(i));
             }
         }
 
         // _rotation attributes
         if (_rotation.is_valid()) {
-            for (size_t i = 0; i < _rotation.size(1); ++i) {
+            for (size_t i = 0; i < _rotation.shape()[1]; ++i) {
                 a.emplace_back("rot_" + std::to_string(i));
             }
         }
@@ -599,13 +655,78 @@ namespace lfs::core {
         pc.means = _means.cpu().contiguous();
         pc.normals = Tensor::zeros_like(pc.means);
 
-        // Gaussian attributes - _sh0 and _shN are in correct layout [N, 3, coeffs]
+        // Gaussian attributes - SH coefficients can be either:
+        // - 3D [N, B, 3] from initial load (need transpose+flatten)
+        // - 2D [N, 3*B] during training after densification (already correct for PLY)
+        // PLY format expects [N, 3*B]
         if (_sh0.is_valid()) {
-            pc.sh0 = _sh0.cpu().contiguous();
+            LOG_INFO("to_point_cloud: _sh0 shape before cpu/contiguous: ndim={}, shape=[{}{}{}]",
+                     _sh0.ndim(),
+                     _sh0.shape()[0],
+                     _sh0.ndim() >= 2 ? fmt::format(", {}", _sh0.shape()[1]) : "",
+                     _sh0.ndim() >= 3 ? fmt::format(", {}", _sh0.shape()[2]) : "");
+
+            auto sh0_cpu = _sh0.cpu().contiguous();
+
+            LOG_INFO("to_point_cloud: sh0_cpu shape after cpu/contiguous: ndim={}, shape=[{}{}{}]",
+                     sh0_cpu.ndim(),
+                     sh0_cpu.shape()[0],
+                     sh0_cpu.ndim() >= 2 ? fmt::format(", {}", sh0_cpu.shape()[1]) : "",
+                     sh0_cpu.ndim() >= 3 ? fmt::format(", {}", sh0_cpu.shape()[2]) : "");
+
+            if (sh0_cpu.ndim() == 3) {
+                LOG_INFO("to_point_cloud: sh0 is 3D, will transpose and flatten");
+                // Transpose from [N, B, 3] to [N, 3, B], then flatten to [N, 3*B]
+                auto sh0_transposed = sh0_cpu.transpose(1, 2);  // [N, B, 3] -> [N, 3, B]
+                size_t N = sh0_transposed.shape()[0];
+                size_t flat_dim = sh0_transposed.shape()[1] * sh0_transposed.shape()[2];
+                pc.sh0 = sh0_transposed.reshape({static_cast<int>(N), static_cast<int>(flat_dim)});
+                LOG_INFO("to_point_cloud: sh0 after processing: shape=[{}, {}]", N, flat_dim);
+            } else if (sh0_cpu.ndim() == 2) {
+                LOG_INFO("to_point_cloud: sh0 is 2D, using as-is with shape=[{}, {}]",
+                         sh0_cpu.shape()[0], sh0_cpu.shape()[1]);
+                // Already 2D [N, 3*B] - use as-is
+                pc.sh0 = sh0_cpu;
+            } else {
+                LOG_ERROR("Unexpected sh0 dimensions: {}, shape: [{}]", sh0_cpu.ndim(),
+                         sh0_cpu.ndim() >= 1 ? sh0_cpu.shape()[0] : 0);
+                pc.sh0 = sh0_cpu;
+            }
         }
 
         if (_shN.is_valid()) {
-            pc.shN = _shN.cpu().contiguous();
+            LOG_INFO("to_point_cloud: _shN shape before cpu/contiguous: ndim={}, shape=[{}{}{}]",
+                     _shN.ndim(),
+                     _shN.shape()[0],
+                     _shN.ndim() >= 2 ? fmt::format(", {}", _shN.shape()[1]) : "",
+                     _shN.ndim() >= 3 ? fmt::format(", {}", _shN.shape()[2]) : "");
+
+            auto shN_cpu = _shN.cpu().contiguous();
+
+            LOG_INFO("to_point_cloud: shN_cpu shape after cpu/contiguous: ndim={}, shape=[{}{}{}]",
+                     shN_cpu.ndim(),
+                     shN_cpu.shape()[0],
+                     shN_cpu.ndim() >= 2 ? fmt::format(", {}", shN_cpu.shape()[1]) : "",
+                     shN_cpu.ndim() >= 3 ? fmt::format(", {}", shN_cpu.shape()[2]) : "");
+
+            if (shN_cpu.ndim() == 3) {
+                LOG_INFO("to_point_cloud: shN is 3D, will transpose and flatten");
+                // Transpose from [N, B, 3] to [N, 3, B], then flatten to [N, 3*B]
+                auto shN_transposed = shN_cpu.transpose(1, 2);  // [N, B, 3] -> [N, 3, B]
+                size_t N = shN_transposed.shape()[0];
+                size_t flat_dim = shN_transposed.shape()[1] * shN_transposed.shape()[2];
+                pc.shN = shN_transposed.reshape({static_cast<int>(N), static_cast<int>(flat_dim)});
+                LOG_INFO("to_point_cloud: shN after processing: shape=[{}, {}]", N, flat_dim);
+            } else if (shN_cpu.ndim() == 2) {
+                LOG_INFO("to_point_cloud: shN is 2D, using as-is with shape=[{}, {}]",
+                         shN_cpu.shape()[0], shN_cpu.shape()[1]);
+                // Already 2D [N, 3*B] - use as-is
+                pc.shN = shN_cpu;
+            } else {
+                LOG_ERROR("Unexpected shN dimensions: {}, shape: [{}]", shN_cpu.ndim(),
+                         shN_cpu.ndim() >= 1 ? shN_cpu.shape()[0] : 0);
+                pc.shN = shN_cpu;
+            }
         }
 
         if (_opacity.is_valid()) {
@@ -630,7 +751,7 @@ namespace lfs::core {
 
     // ========== CROPPING ==========
 
-    SplatData SplatData::crop_by_cropbox(const gs::geometry::BoundingBox& bounding_box) const {
+    SplatData SplatData::crop_by_cropbox(const lfs::geometry::BoundingBox& bounding_box) const {
         LOG_TIMER("SplatData::crop_by_cropbox");
 
         if (!_means.is_valid() || _means.size(0) == 0) {
@@ -754,6 +875,99 @@ namespace lfs::core {
                   num_points, points_inside, _scene_scale, new_scene_scale);
 
         return cropped_splat;
+    }
+
+    // RANDOM CROP
+
+    void SplatData::random_choose(int num_required_splat, int seed) {
+        LOG_TIMER("SplatData::random_choose");
+
+        if (!_means.is_valid() || _means.size(0) == 0) {
+            LOG_WARN("Cannot choose from invalid or empty SplatData");
+            return;
+        }
+
+        const int num_points = _means.size(0);
+
+        // Clamp num_splat to valid range
+        if (num_required_splat <= 0) {
+            LOG_WARN("num_splat must be positive, got {}", num_required_splat);
+            return;
+        }
+
+        if (num_required_splat >= num_points) {
+            LOG_DEBUG("num_splat ({}) >= total points ({}), keeping all data",
+                      num_required_splat, num_points);
+            return;
+        }
+
+        LOG_DEBUG("Randomly selecting {} points from {} total points (seed: {})",
+                  num_required_splat, num_points, seed);
+
+        // Generate random indices
+        // Create a vector of all indices [0, 1, 2, ..., num_points-1]
+        std::vector<int> all_indices(num_points);
+        std::iota(all_indices.begin(), all_indices.end(), 0);
+
+        // Shuffle the indices using the provided seed
+        std::mt19937 rng(seed);
+        std::shuffle(all_indices.begin(), all_indices.end(), rng);
+
+        // Take the first num_splat indices
+        std::vector<int> selected_indices(all_indices.begin(),
+                                          all_indices.begin() + num_required_splat);
+
+        // Convert to tensor for indexing
+        auto indices_tensor = Tensor::from_vector(
+            selected_indices,
+            TensorShape({static_cast<size_t>(num_required_splat)}),
+            _means.device());
+
+        // Index all tensors in-place using the selected indices
+        _means = _means.index_select(0, indices_tensor).contiguous();
+        _sh0 = _sh0.index_select(0, indices_tensor).contiguous();
+        _shN = _shN.index_select(0, indices_tensor).contiguous();
+        _scaling = _scaling.index_select(0, indices_tensor).contiguous();
+        _rotation = _rotation.index_select(0, indices_tensor).contiguous();
+        _opacity = _opacity.index_select(0, indices_tensor).contiguous();
+
+        // Update gradients if they exist
+        if (_means_grad.is_valid()) {
+            _means_grad = _means_grad.index_select(0, indices_tensor).contiguous();
+        }
+        if (_sh0_grad.is_valid()) {
+            _sh0_grad = _sh0_grad.index_select(0, indices_tensor).contiguous();
+        }
+        if (_shN_grad.is_valid()) {
+            _shN_grad = _shN_grad.index_select(0, indices_tensor).contiguous();
+        }
+        if (_scaling_grad.is_valid()) {
+            _scaling_grad = _scaling_grad.index_select(0, indices_tensor).contiguous();
+        }
+        if (_rotation_grad.is_valid()) {
+            _rotation_grad = _rotation_grad.index_select(0, indices_tensor).contiguous();
+        }
+        if (_opacity_grad.is_valid()) {
+            _opacity_grad = _opacity_grad.index_select(0, indices_tensor).contiguous();
+        }
+
+        // Update densification info if it exists
+        if (_densification_info.is_valid() && _densification_info.size(0) == num_points) {
+            _densification_info = _densification_info.index_select(0, indices_tensor).contiguous();
+        }
+
+        // Recalculate scene scale for the selected data
+        Tensor scene_center = _means.mean({0}, false);
+        Tensor dists = _means.sub(scene_center).norm(2.0f, {1}, false);
+
+        float old_scene_scale = _scene_scale;
+        if (num_required_splat > 1) {
+            auto sorted_dists = dists.sort(0, false);
+            _scene_scale = sorted_dists.first[num_required_splat / 2].item();
+        }
+
+        LOG_DEBUG("Successfully selected {} random splats in-place (scale: {:.4f} -> {:.4f})",
+                  num_required_splat, old_scene_scale, _scene_scale);
     }
 
     // ========== FACTORY METHOD ==========
@@ -934,5 +1148,53 @@ namespace lfs::core {
     //             opacity_grad.zero_();
     //         }
     //     }
+
+    // ========== GRADIENT MANAGEMENT ==========
+
+    void SplatData::allocate_gradients() {
+        if (_means.is_valid()) {
+            _means_grad = Tensor::zeros(_means.shape(), _means.device());
+        }
+        if (_sh0.is_valid()) {
+            _sh0_grad = Tensor::zeros(_sh0.shape(), _sh0.device());
+        }
+        if (_shN.is_valid()) {
+            _shN_grad = Tensor::zeros(_shN.shape(), _shN.device());
+        }
+        if (_scaling.is_valid()) {
+            _scaling_grad = Tensor::zeros(_scaling.shape(), _scaling.device());
+        }
+        if (_rotation.is_valid()) {
+            _rotation_grad = Tensor::zeros(_rotation.shape(), _rotation.device());
+        }
+        if (_opacity.is_valid()) {
+            _opacity_grad = Tensor::zeros(_opacity.shape(), _opacity.device());
+        }
+    }
+
+    void SplatData::zero_gradients() {
+        if (_means_grad.is_valid()) {
+            _means_grad.zero_();
+        }
+        if (_sh0_grad.is_valid()) {
+            _sh0_grad.zero_();
+        }
+        if (_shN_grad.is_valid()) {
+            _shN_grad.zero_();
+        }
+        if (_scaling_grad.is_valid()) {
+            _scaling_grad.zero_();
+        }
+        if (_rotation_grad.is_valid()) {
+            _rotation_grad.zero_();
+        }
+        if (_opacity_grad.is_valid()) {
+            _opacity_grad.zero_();
+        }
+    }
+
+    bool SplatData::has_gradients() const {
+        return _means_grad.is_valid();
+    }
 
 } // namespace lfs::core

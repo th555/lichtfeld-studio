@@ -5,9 +5,10 @@
 #include "core_new/application.hpp"
 #include "core_new/argument_parser.hpp"
 #include "core_new/logger.hpp"
-#include "project/project.hpp"
-#include "training/training_setup.hpp"
-#include "visualizer/visualizer.hpp"
+#include "project_new/project.hpp"
+#include "training_new/training_setup.hpp"
+#include "visualizer_new/visualizer.hpp"
+#include <cstring>
 #ifdef WIN32
 #include <windows.h>
 #endif
@@ -22,13 +23,15 @@ namespace lfs::core {
 
         LOG_INFO("Starting headless training...");
 
-        auto project = gs::management::CreateNewProject(params->dataset, params->optimization);
+        auto project = lfs::project::CreateNewProject(
+            params->dataset,
+            params->optimization);
         if (!project) {
             LOG_ERROR("Project creation failed");
             return -1;
         }
 
-        auto setup_result = gs::training::setupTraining(*params);
+        auto setup_result = lfs::training::setupTraining(*params);
         if (!setup_result) {
             LOG_ERROR("Training setup failed: {}", setup_result.error());
             return -1;
@@ -57,15 +60,15 @@ namespace lfs::core {
         LOG_INFO("Starting viewer mode...");
 
         LOG_DEBUG("removing temporary projects");
-        gs::management::RemoveTempUnlockedProjects();
+        lfs::project::RemoveTempUnlockedProjects();
 
         // Create visualizer with options
-        auto viewer = visualizer::Visualizer::create({.title = "LichtFeld Studio",
-                                                      .width = 1280,
-                                                      .height = 720,
-                                                      .antialiasing = params->optimization.antialiasing,
-                                                      .enable_cuda_interop = true,
-                                                      .gut = params->optimization.gut});
+        auto viewer = lfs::vis::Visualizer::create({.title = "LichtFeld Studio",
+                                                    .width = 1280,
+                                                    .height = 720,
+                                                    .antialiasing = params->optimization.antialiasing,
+                                                    .enable_cuda_interop = true,
+                                                    .gut = params->optimization.gut});
 
         if (!params->dataset.project_path.empty() &&
             !std::filesystem::exists(params->dataset.project_path)) {
@@ -88,9 +91,11 @@ namespace lfs::core {
                 return -1;
             }
         } else { // create temporary project until user will save it in desired location
-            std::shared_ptr<gs::management::Project> project = nullptr;
+            std::shared_ptr<lfs::project::Project> project = nullptr;
             if (params->dataset.output_path.empty()) {
-                project = gs::management::CreateTempNewProject(params->dataset, params->optimization);
+                project = lfs::project::CreateTempNewProject(
+                    params->dataset,
+                    params->optimization);
                 if (!project) {
                     LOG_ERROR("Temporary project creation failed");
                     return -1;
@@ -98,7 +103,9 @@ namespace lfs::core {
                 params->dataset.output_path = project->getProjectOutputFolder();
                 LOG_DEBUG("Created temporary project at: {}", params->dataset.output_path.string());
             } else {
-                project = gs::management::CreateNewProject(params->dataset, params->optimization);
+                project = lfs::project::CreateNewProject(
+                    params->dataset,
+                    params->optimization);
                 if (!project) {
                     LOG_ERROR("Project creation failed");
                     return -1;

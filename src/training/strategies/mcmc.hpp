@@ -5,6 +5,7 @@
 #pragma once
 
 #include "istrategy.hpp"
+#include "optimizers/fused_adam.hpp"
 #include <memory>
 #include <torch/torch.h>
 
@@ -36,6 +37,20 @@ namespace gs::training {
         const gs::SplatData& get_model() const override { return _splat_data; }
 
         void remove_gaussians(const torch::Tensor& mask) override;
+
+        // Accessors for debugging/comparison
+        torch::optim::Optimizer* get_optimizer() { return _optimizer.get(); }
+        double get_lr(int param_group_index = 0) const {
+            if (!_optimizer) return 0.0;
+            auto& group = _optimizer->param_groups()[param_group_index];
+            auto* fused_adam_options = static_cast<FusedAdam::Options*>(&group.options());
+            return fused_adam_options->lr();
+        }
+
+        // Test/comparison helpers - expose private methods for testing
+        int add_new_gs_test() { return add_new_gs(); }
+        int add_new_gs_with_indices_test(const torch::Tensor& sampled_idxs);
+        int relocate_gs_test() { return relocate_gs(); }
 
     private:
         // Simple ExponentialLR implementation since C++ API is different

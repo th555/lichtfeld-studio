@@ -4,7 +4,7 @@
 
 #pragma once
 #include "core_new/event_bus.hpp"
-#include "geometry/bounding_box.hpp"
+#include "geometry_new/bounding_box.hpp"
 #include <filesystem>
 #include <glm/glm.hpp>
 #include <optional>
@@ -23,11 +23,11 @@ namespace lfs::core {
         __VA_ARGS__                                        \
                                                            \
         void emit() const {                                \
-            ::lfs::core::event::bus().emit(*this);                \
+            ::lfs::core::event::bus().emit(*this);         \
         }                                                  \
                                                            \
         static auto when(auto&& handler) {                 \
-            return ::lfs::core::event::bus().when<Name>(          \
+            return ::lfs::core::event::bus().when<Name>(   \
                 std::forward<decltype(handler)>(handler)); \
         }                                                  \
     }
@@ -55,7 +55,7 @@ namespace lfs::core {
             EVENT(RemovePLY, std::string name;);
             EVENT(RenamePLY, std::string old_name; std::string new_name;);
             EVENT(SetPLYVisibility, std::string name; bool visible;);
-            EVENT(CropPLY, lfs::core::geometry::BoundingBox crop_box;);
+            EVENT(CropPLY, lfs::geometry::BoundingBox crop_box;);
             EVENT(CyclePLY, );
             EVENT(ToggleSplitView, );
             EVENT(ToggleGTComparison, );
@@ -162,7 +162,7 @@ namespace lfs::core {
             EVENT(ConsoleResult, std::string command; std::string result;);
             EVENT(SplitPositionChanged, float position;);
             EVENT(GTComparisonModeChanged, bool enabled;); // NEW: GT comparison mode changed
-        } // namespace ui
+        }                                                  // namespace ui
 
         // ============================================================================
         // Internal - System coordination events (minimal)
@@ -172,7 +172,7 @@ namespace lfs::core {
             EVENT(TrainingReadyToStart, );
             EVENT(WindowFocusLost, );
         } // namespace internal
-    } // namespace events
+    }     // namespace events
 
     // ============================================================================
     // Convenience functions

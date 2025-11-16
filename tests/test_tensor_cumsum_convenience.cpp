@@ -377,7 +377,8 @@ TEST_F(TensorCumsumConvenienceTest, ItemInt) {
 TEST_F(TensorCumsumConvenienceTest, ItemBool) {
     std::vector<bool> data = {true};
 
-    auto custom_t = Tensor::from_vector(data, {1}, Device::CUDA);
+    // from_vector creates Float32 by default, so we need to convert to Bool
+    auto custom_t = Tensor::from_vector(data, {1}, Device::CUDA).to(DataType::Bool);
     auto torch_t = torch::tensor({1}, torch::TensorOptions().dtype(torch::kBool).device(torch::kCUDA));
 
     unsigned char custom_value = custom_t.item<unsigned char>();

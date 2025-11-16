@@ -20,6 +20,57 @@
 
 namespace lfs::core {
 
+    // Block implementation
+    PinnedMemoryAllocator::Block::Block(void* p, size_t s, cudaStream_t stream)
+        : ptr(p), size(s), last_stream(stream) {
+        if (ptr) {
+            cudaError_t err = cudaEventCreate(&ready_event);
+            if (err != cudaSuccess) {
+                LOG_ERROR("cudaEventCreate failed: {}", cudaGetErrorString(err));
+                ready_event = nullptr;
+            }
+        }
+    }
+
+    PinnedMemoryAllocator::Block::~Block() {
+        if (ready_event) {
+            cudaError_t err = cudaEventDestroy(ready_event);
+            if (err != cudaSuccess) {
+                LOG_ERROR("cudaEventDestroy failed: {}", cudaGetErrorString(err));
+            }
+        }
+    }
+
+    PinnedMemoryAllocator::Block::Block(Block&& other) noexcept
+        : ptr(other.ptr), size(other.size), last_stream(other.last_stream), ready_event(other.ready_event) {
+        other.ptr = nullptr;
+        other.size = 0;
+        other.last_stream = nullptr;
+        other.ready_event = nullptr;
+    }
+
+    PinnedMemoryAllocator::Block& PinnedMemoryAllocator::Block::operator=(Block&& other) noexcept {
+        if (this != &other) {
+            // Clean up existing event
+            if (ready_event) {
+                cudaEventDestroy(ready_event);
+            }
+
+            // Move data
+            ptr = other.ptr;
+            size = other.size;
+            last_stream = other.last_stream;
+            ready_event = other.ready_event;
+
+            // Clear other
+            other.ptr = nullptr;
+            other.size = 0;
+            other.last_stream = nullptr;
+            other.ready_event = nullptr;
+        }
+        return *this;
+    }
+
     PinnedMemoryAllocator& PinnedMemoryAllocator::instance() {
         static PinnedMemoryAllocator instance;
         return instance;
@@ -59,21 +110,46 @@ namespace lfs::core {
 
         std::lock_guard<std::mutex> lock(mutex_);
 
-        // Try to reuse a cached block
+        // Try to reuse a cached block (STREAM-SAFE VERSION)
         auto it = cache_.find(rounded_size);
         if (it != cache_.end() && !it->second.empty()) {
-            // Cache hit! Reuse existing pinned block
-            Block block = it->second.back();
-            it->second.pop_back();
+            // Search for a block whose stream has completed
+            for (size_t i = 0; i < it->second.size(); ++i) {
+                Block& block = it->second[i];
 
-            allocated_blocks_[block.ptr] = block.size;
-            stats_.allocated_bytes += block.size;
-            stats_.cache_hits++;
+                // Check if stream has completed (non-blocking query)
+                cudaError_t status = cudaSuccess;
+                if (block.ready_event) {
+                    status = cudaEventQuery(block.ready_event);
+                }
 
-            LOG_TRACE("Pinned memory cache HIT: {} bytes (total allocated: {} MB)",
-                      bytes, stats_.allocated_bytes / (1024.0 * 1024.0));
+                if (status == cudaSuccess) {
+                    // Stream completed! Safe to reuse this block
+                    void* ptr = block.ptr;
+                    size_t size = block.size;
 
-            return block.ptr;
+                    // Remove from cache (swap with last element for O(1) removal)
+                    std::swap(it->second[i], it->second.back());
+                    it->second.pop_back();
+
+                    allocated_blocks_[ptr] = size;
+                    stats_.allocated_bytes += size;
+                    stats_.cached_bytes -= size;
+                    stats_.cache_hits++;
+
+                    LOG_TRACE("Pinned memory cache HIT (stream-safe): {} bytes (total allocated: {} MB)",
+                              bytes, stats_.allocated_bytes / (1024.0 * 1024.0));
+
+                    return ptr;
+                } else if (status != cudaErrorNotReady) {
+                    // Unexpected error - log and skip this block
+                    LOG_ERROR("cudaEventQuery failed: {}", cudaGetErrorString(status));
+                }
+                // If cudaErrorNotReady, stream still running - try next block
+            }
+
+            // No ready blocks found - fall through to allocate new
+            LOG_TRACE("Pinned memory cache MISS (all {} blocks busy): {} bytes", it->second.size(), bytes);
         }
 
         // Cache miss - need to allocate new pinned memory
@@ -97,13 +173,13 @@ namespace lfs::core {
         stats_.num_allocs++;
         stats_.cache_misses++;
 
-        LOG_TRACE("Pinned memory cache MISS: allocated {} bytes (total: {} MB, {} allocs)",
+        LOG_TRACE("Pinned memory allocated: {} bytes (total: {} MB, {} allocs)",
                   bytes, stats_.allocated_bytes / (1024.0 * 1024.0), stats_.num_allocs);
 
         return ptr;
     }
 
-    void PinnedMemoryAllocator::deallocate(void* ptr) {
+    void PinnedMemoryAllocator::deallocate(void* ptr, cudaStream_t stream) {
         if (!ptr) {
             return;
         }
@@ -130,14 +206,23 @@ namespace lfs::core {
         stats_.allocated_bytes -= size;
         stats_.num_deallocs++;
 
-        // Cache the block for reuse instead of freeing immediately
-        Block block{ptr, size};
-        cache_[size].push_back(block);
+        // Create block with stream tracking and record event
+        Block block{ptr, size, stream};
+
+        // Record event on the stream to track when memory is safe to reuse
+        if (block.ready_event) {
+            cudaError_t err = cudaEventRecord(block.ready_event, stream);
+            if (err != cudaSuccess) {
+                LOG_ERROR("cudaEventRecord failed: {} - memory may not be stream-safe!",
+                          cudaGetErrorString(err));
+            }
+        }
+
+        cache_[size].push_back(std::move(block));
         stats_.cached_bytes += size;
 
-        LOG_TRACE("Pinned memory cached: {} bytes (cache size: {} MB, {} blocks)",
-                  size, stats_.cached_bytes / (1024.0 * 1024.0),
-                  cache_[size].size());
+        LOG_TRACE("Pinned memory cached with stream sync: {} bytes (stream: {}, cache size: {} MB)",
+                  size, (void*)stream, stats_.cached_bytes / (1024.0 * 1024.0));
     }
 
     void PinnedMemoryAllocator::empty_cache() {
@@ -148,7 +233,16 @@ namespace lfs::core {
 
         // Free all cached blocks
         for (auto& [size, blocks] : cache_) {
-            for (const auto& block : blocks) {
+            for (auto& block : blocks) {
+                // Wait for stream to complete before freeing
+                if (block.ready_event) {
+                    cudaError_t status = cudaEventSynchronize(block.ready_event);
+                    if (status != cudaSuccess) {
+                        LOG_ERROR("cudaEventSynchronize failed during cache clear: {}",
+                                  cudaGetErrorString(status));
+                    }
+                }
+
                 CHECK_CUDA(cudaFreeHost(block.ptr));
                 freed_bytes += block.size;
                 freed_blocks++;

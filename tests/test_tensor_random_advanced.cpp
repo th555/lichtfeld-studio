@@ -28,7 +28,7 @@ namespace {
         ASSERT_EQ(custom_cpu.numel(), static_cast<size_t>(ref_cpu.numel()))
             << msg << ": Element count mismatch";
 
-        auto custom_vec = custom_cpu.to_vector_int();
+        auto custom_vec = custom_cpu.to_vector_int64();
         auto ref_accessor = ref_cpu.accessor<int, 1>();
 
         for (size_t i = 0; i < custom_vec.size(); ++i) {
@@ -104,13 +104,13 @@ TEST_F(TensorRandomAdvancedTest, MultinomialBasicCPU) {
     auto torch_samples = torch::multinomial(torch_weights, 10, true);
 
     ASSERT_TRUE(custom_samples.is_valid());
-    EXPECT_EQ(custom_samples.dtype(), DataType::Int32);
+    EXPECT_EQ(custom_samples.dtype(), DataType::Int64);
     EXPECT_EQ(custom_samples.shape(), TensorShape({10}));
     EXPECT_EQ(custom_samples.device(), Device::CPU);
 
     // Check all samples are in valid range [0, 5)
-    auto custom_values = custom_samples.to_vector_int();
-    for (int v : custom_values) {
+    auto custom_values = custom_samples.to_vector_int64();
+    for (int64_t v : custom_values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 5);
     }
@@ -136,12 +136,12 @@ TEST_F(TensorRandomAdvancedTest, MultinomialBasicCUDA) {
     auto torch_samples = torch::multinomial(torch_weights, 10, true);
 
     ASSERT_TRUE(custom_samples.is_valid());
-    EXPECT_EQ(custom_samples.dtype(), DataType::Int32);
+    EXPECT_EQ(custom_samples.dtype(), DataType::Int64);
     EXPECT_EQ(custom_samples.shape(), TensorShape({10}));
     EXPECT_EQ(custom_samples.device(), Device::CUDA);
 
-    auto custom_values = custom_samples.to_vector_int();
-    for (int v : custom_values) {
+    auto custom_values = custom_samples.to_vector_int64();
+    for (int64_t v : custom_values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 5);
     }
@@ -159,9 +159,9 @@ TEST_F(TensorRandomAdvancedTest, MultinomialWithReplacement) {
     EXPECT_EQ(custom_samples.numel(), 100);
 
     // With replacement, count frequency of each index
-    auto values = custom_samples.to_vector_int();
+    auto values = custom_samples.to_vector_int64();
     std::map<int, int> freq;
-    for (int v : values) {
+    for (int64_t v : values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 3);
         freq[v]++;
@@ -192,12 +192,12 @@ TEST_F(TensorRandomAdvancedTest, MultinomialWithoutReplacement) {
     EXPECT_EQ(custom_samples.numel(), 5);
 
     // Without replacement, each index should appear exactly once
-    auto custom_values = custom_samples.to_vector_int();
+    auto custom_values = custom_samples.to_vector_int64();
     std::set<int> custom_unique(custom_values.begin(), custom_values.end());
     EXPECT_EQ(custom_unique.size(), 5);
 
     // All values should be in [0, 5)
-    for (int v : custom_values) {
+    for (int64_t v : custom_values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 5);
     }
@@ -226,11 +226,11 @@ TEST_F(TensorRandomAdvancedTest, MultinomialPartialSamplingWithoutReplacement) {
     EXPECT_EQ(custom_samples.numel(), 3);
 
     // Should get 3 unique values from [0, 7)
-    auto values = custom_samples.to_vector_int();
+    auto values = custom_samples.to_vector_int64();
     std::set<int> unique(values.begin(), values.end());
     EXPECT_EQ(unique.size(), 3);
 
-    for (int v : values) {
+    for (int64_t v : values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 7);
     }
@@ -245,9 +245,9 @@ TEST_F(TensorRandomAdvancedTest, MultinomialBiasedWeights) {
 
     auto custom_samples = Tensor::multinomial(custom_weights, 1000, true);
 
-    auto values = custom_samples.to_vector_int();
+    auto values = custom_samples.to_vector_int64();
     std::map<int, int> freq;
-    for (int v : values) {
+    for (int64_t v : values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 4);
         freq[v]++;
@@ -270,10 +270,10 @@ TEST_F(TensorRandomAdvancedTest, MultinomialZeroWeight) {
 
     auto custom_samples = Tensor::multinomial(custom_weights, 100, true);
 
-    auto values = custom_samples.to_vector_int();
+    auto values = custom_samples.to_vector_int64();
 
     // Should never sample indices with zero weight
-    for (int v : values) {
+    for (int64_t v : values) {
         EXPECT_TRUE(v == 0 || v == 2) << "Got invalid index: " << v;
         EXPECT_FALSE(v == 1 || v == 3) << "Sampled zero-weight index: " << v;
     }
@@ -298,7 +298,7 @@ TEST_F(TensorRandomAdvancedTest, MultinomialSingleSample) {
     ASSERT_TRUE(custom_sample.is_valid());
     EXPECT_EQ(custom_sample.numel(), 1);
 
-    int custom_value = custom_sample.to_vector_int()[0];
+    int64_t custom_value = custom_sample.to_vector_int64()[0];
     EXPECT_GE(custom_value, 0);
     EXPECT_LT(custom_value, 10);
 
@@ -336,7 +336,7 @@ TEST_F(TensorRandomAdvancedTest, MultinomialTooManySamplesWithoutReplacement) {
 
     // Implementation should either fail or cap at num_weights
     if (custom_samples.is_valid()) {
-        auto values = custom_samples.to_vector_int();
+        auto values = custom_samples.to_vector_int64();
         std::set<int> unique(values.begin(), values.end());
         EXPECT_LE(unique.size(), 5) << "Cannot have more unique samples than weights";
         EXPECT_LE(custom_samples.numel(), 5) << "Should cap at number of weights";
@@ -356,8 +356,8 @@ TEST_F(TensorRandomAdvancedTest, MultinomialReproducibilityCPU) {
     Tensor::manual_seed(12345);
     auto samples2 = Tensor::multinomial(weights, 20, true);
 
-    auto values1 = samples1.to_vector_int();
-    auto values2 = samples2.to_vector_int();
+    auto values1 = samples1.to_vector_int64();
+    auto values2 = samples2.to_vector_int64();
 
     EXPECT_EQ(values1, values2) << "Same seed should produce same results";
 }
@@ -373,8 +373,8 @@ TEST_F(TensorRandomAdvancedTest, MultinomialReproducibilityCUDA) {
     Tensor::manual_seed(12345);
     auto samples2 = Tensor::multinomial(weights, 20, true);
 
-    auto values1 = samples1.to_vector_int();
-    auto values2 = samples2.to_vector_int();
+    auto values1 = samples1.to_vector_int64();
+    auto values2 = samples2.to_vector_int64();
 
     EXPECT_EQ(values1, values2) << "Same seed should produce same results";
 }
@@ -389,8 +389,8 @@ TEST_F(TensorRandomAdvancedTest, MultinomialWithoutReplacementReproducibility) {
     Tensor::manual_seed(67890);
     auto samples2 = Tensor::multinomial(weights, 3, false);
 
-    auto values1 = samples1.to_vector_int();
-    auto values2 = samples2.to_vector_int();
+    auto values1 = samples1.to_vector_int64();
+    auto values2 = samples2.to_vector_int64();
 
     EXPECT_EQ(values1, values2) << "Same seed should produce same results";
 }
@@ -406,9 +406,9 @@ TEST_F(TensorRandomAdvancedTest, MultinomialUniformDistribution) {
 
     auto samples = Tensor::multinomial(weights, 10000, true);
 
-    auto values = samples.to_vector_int();
+    auto values = samples.to_vector_int64();
     std::map<int, int> freq;
-    for (int v : values) {
+    for (int64_t v : values) {
         freq[v]++;
     }
 
@@ -431,9 +431,9 @@ TEST_F(TensorRandomAdvancedTest, MultinomialSkewedDistribution) {
 
     auto samples = Tensor::multinomial(weights, 5000, true);
 
-    auto values = samples.to_vector_int();
+    auto values = samples.to_vector_int64();
     std::map<int, int> freq;
-    for (int v : values) {
+    for (int64_t v : values) {
         freq[v]++;
     }
 
@@ -459,15 +459,15 @@ TEST_F(TensorRandomAdvancedTest, MultinomialLargeScaleCUDA) {
     EXPECT_EQ(samples.device(), Device::CUDA);
 
     // Verify all samples are in valid range
-    auto values = samples.to_vector_int();
-    for (int v : values) {
+    auto values = samples.to_vector_int64();
+    for (int64_t v : values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 1000);
     }
 
     // Check distribution is roughly uniform
     std::map<int, int> freq;
-    for (int v : values) {
+    for (int64_t v : values) {
         freq[v]++;
     }
 
@@ -489,8 +489,8 @@ TEST_F(TensorRandomAdvancedTest, MultinomialLargeWeightsArray) {
     ASSERT_TRUE(samples.is_valid());
     EXPECT_EQ(samples.numel(), 100);
 
-    auto values = samples.to_vector_int();
-    for (int v : values) {
+    auto values = samples.to_vector_int64();
+    for (int64_t v : values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 10000);
     }
@@ -559,8 +559,8 @@ TEST_F(TensorRandomAdvancedTest, MultinomialBatchProcessing) {
     // Each batch should be different (unless by extreme coincidence)
     bool all_different = false;
     for (size_t i = 0; i < batch_samples.size() - 1; ++i) {
-        auto vals1 = batch_samples[i].to_vector_int();
-        auto vals2 = batch_samples[i + 1].to_vector_int();
+        auto vals1 = batch_samples[i].to_vector_int64();
+        auto vals2 = batch_samples[i + 1].to_vector_int64();
         if (vals1 != vals2) {
             all_different = true;
             break;
@@ -582,8 +582,8 @@ TEST_F(TensorRandomAdvancedTest, MultinomialSingleWeight) {
     EXPECT_EQ(samples.numel(), 5);
 
     // All samples must be index 0
-    auto values = samples.to_vector_int();
-    for (int v : values) {
+    auto values = samples.to_vector_int64();
+    for (int64_t v : values) {
         EXPECT_EQ(v, 0);
     }
 }
@@ -600,8 +600,8 @@ TEST_F(TensorRandomAdvancedTest, MultinomialVerySmallWeights) {
     EXPECT_EQ(samples.numel(), 20);
 
     // Should still work with very small weights
-    auto values = samples.to_vector_int();
-    for (int v : values) {
+    auto values = samples.to_vector_int64();
+    for (int64_t v : values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 4);
     }
@@ -618,8 +618,8 @@ TEST_F(TensorRandomAdvancedTest, MultinomialVeryLargeWeights) {
     ASSERT_TRUE(samples.is_valid());
     EXPECT_EQ(samples.numel(), 20);
 
-    auto values = samples.to_vector_int();
-    for (int v : values) {
+    auto values = samples.to_vector_int64();
+    for (int64_t v : values) {
         EXPECT_GE(v, 0);
         EXPECT_LT(v, 4);
     }

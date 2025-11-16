@@ -186,5 +186,20 @@ namespace gs {
 
             return grad_grids;
         }
+
+        // Manual forward/backward interface (no autograd)
+        std::pair<float, BilateralGridTVContext> bilateral_grid_tv_forward(
+            const torch::Tensor& grids) {
+            auto loss_tensor = tv_loss_forward_cuda(grids);
+            BilateralGridTVContext ctx{grids};
+            return {loss_tensor.item<float>(), ctx};
+        }
+
+        torch::Tensor bilateral_grid_tv_backward(
+            const BilateralGridTVContext& ctx,
+            float grad_loss) {
+            auto grad_loss_tensor = torch::tensor(grad_loss, ctx.grids.options());
+            return tv_loss_backward_cuda(ctx.grids, grad_loss_tensor);
+        }
     } // namespace bilateral_grid
 } // namespace gs

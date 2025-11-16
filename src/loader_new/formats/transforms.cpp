@@ -137,7 +137,7 @@ namespace lfs::loader {
             try {
                 LOG_DEBUG("Width/height not in transforms.json, reading from first image");
                 auto first_frame_img_path = GetTransformImagePath(dir_path, transforms["frames"][0]);
-                auto result = get_image_info(first_frame_img_path);
+                auto result = lfs::core::get_image_info(first_frame_img_path);
 
                 w = std::get<0>(result);
                 h = std::get<1>(result);

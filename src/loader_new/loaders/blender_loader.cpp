@@ -160,11 +160,10 @@ namespace lfs::loader {
             }
 
             // Create dataset configuration
-            lfs::core::param::DatasetConfig dataset_config;
-            dataset_config.data_path = path;
-            dataset_config.images = options.images_folder;
+            lfs::training::DatasetConfig dataset_config;
             dataset_config.resize_factor = options.resize_factor;
             dataset_config.max_width = options.max_width;
+            dataset_config.test_every = 8; // Default split behavior
 
             // Create dataset with ALL images
             auto dataset = std::make_shared<lfs::training::CameraDataset>(

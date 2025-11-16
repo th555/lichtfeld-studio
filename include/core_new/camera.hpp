@@ -30,11 +30,14 @@ namespace lfs::core {
                int uid);
         Camera(const Camera&, const Tensor& transform);
 
-        // Delete copy, allow move
+        // Destructor to clean up CUDA stream
+        ~Camera();
+
+        // Delete copy, define proper move semantics
         Camera(const Camera&) = delete;
         Camera& operator=(const Camera&) = delete;
-        Camera(Camera&&) = default;
-        Camera& operator=(Camera&&) = default;
+        Camera(Camera&& other) noexcept;
+        Camera& operator=(Camera&& other) noexcept;
 
         // Initialize GPU tensors on demand
         void initialize_cuda_tensors();
@@ -57,6 +60,14 @@ namespace lfs::core {
             return _cam_position;
         }
 
+        // Direct GPU pointer access (tensors are already contiguous on CUDA)
+        const float* world_view_transform_ptr() const {
+            return _world_view_transform.ptr<float>();
+        }
+        const float* cam_position_ptr() const {
+            return _cam_position.ptr<float>();
+        }
+
         const Tensor& R() const { return _R; }
         const Tensor& T() const { return _T; }
 
@@ -70,6 +81,8 @@ namespace lfs::core {
         int camera_width() const noexcept { return _camera_width; }
         float focal_x() const noexcept { return _focal_x; }
         float focal_y() const noexcept { return _focal_y; }
+        float center_x() const noexcept { return _center_x; }
+        float center_y() const noexcept { return _center_y; }
         Tensor radial_distortion() const noexcept { return _radial_distortion; }
         Tensor tangential_distortion() const noexcept { return _tangential_distortion; }
         gsplat::CameraModelType camera_model_type() const noexcept { return _camera_model_type; }

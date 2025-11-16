@@ -345,34 +345,48 @@ namespace lfs::core {
          */
         template <typename T>
         __device__ T vectorized_segment_reduce_sum(const T* segment_start, size_t segment_size) {
-            size_t vec_idx = threadIdx.x;
-            size_t idx = vec_idx * 4;
-
-            T val = 0;
+            // Use double accumulation for float to avoid precision loss
+            double val = 0.0;
             if constexpr (std::is_same_v<T, float>) {
                 bool is_aligned = (reinterpret_cast<uintptr_t>(segment_start) % 16) == 0;
 
-                // Vectorized load: 4 elements per thread (only if aligned)
-                if (is_aligned && idx + 3 < segment_size) {
-                    float4 vals = reinterpret_cast<const float4*>(segment_start)[vec_idx];
-                    val = vals.x + vals.y + vals.z + vals.w;
-                } else if (idx < segment_size) {
-                    // Scalar fallback for unaligned data or remainder
-                    for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
-                        val += segment_start[i];
+                // Grid-stride loop: Process entire segment across all threads
+                size_t stride = blockDim.x * 4;  // Each iteration processes blockDim.x * 4 elements
+                for (size_t base = 0; base < segment_size; base += stride) {
+                    size_t vec_idx = threadIdx.x;
+                    size_t idx = base + vec_idx * 4;
+
+                    // Vectorized load: 4 elements per thread (only if aligned)
+                    if (is_aligned && idx + 3 < segment_size) {
+                        float4 vals = reinterpret_cast<const float4*>(segment_start)[base / 4 + vec_idx];
+                        val += (double)vals.x + (double)vals.y + (double)vals.z + (double)vals.w;
+                    } else if (idx < segment_size) {
+                        // Scalar fallback for unaligned data or remainder
+                        for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
+                            val += (double)segment_start[i];
+                        }
                     }
                 }
+
+                // Warp-level reduction with double precision, then cast back
+                double sum = block_reduce_sum(val);
+                return static_cast<T>(sum);
             } else {
                 // Fallback for non-float types
-                if (idx < segment_size) {
-                    for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
-                        val += segment_start[i];
+                T int_val = 0;
+                size_t stride = blockDim.x * 4;
+                for (size_t base = 0; base < segment_size; base += stride) {
+                    size_t vec_idx = threadIdx.x;
+                    size_t idx = base + vec_idx * 4;
+
+                    if (idx < segment_size) {
+                        for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
+                            int_val += segment_start[i];
+                        }
                     }
                 }
+                return block_reduce_sum(int_val);
             }
-
-            // Warp-level reduction within block
-            return block_reduce_sum(val);
         }
 
         /**
@@ -380,25 +394,35 @@ namespace lfs::core {
          */
         template <typename T>
         __device__ T vectorized_segment_reduce_max(const T* segment_start, size_t segment_size) {
-            size_t vec_idx = threadIdx.x;
-            size_t idx = vec_idx * 4;
-
             T val = -std::numeric_limits<T>::infinity();
             if constexpr (std::is_same_v<T, float>) {
                 bool is_aligned = (reinterpret_cast<uintptr_t>(segment_start) % 16) == 0;
 
-                if (is_aligned && idx + 3 < segment_size) {
-                    float4 vals = reinterpret_cast<const float4*>(segment_start)[vec_idx];
-                    val = fmaxf(fmaxf(vals.x, vals.y), fmaxf(vals.z, vals.w));
-                } else if (idx < segment_size) {
-                    for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
-                        val = fmaxf(val, segment_start[i]);
+                // Grid-stride loop: Process entire segment across all threads
+                size_t stride = blockDim.x * 4;
+                for (size_t base = 0; base < segment_size; base += stride) {
+                    size_t vec_idx = threadIdx.x;
+                    size_t idx = base + vec_idx * 4;
+
+                    if (is_aligned && idx + 3 < segment_size) {
+                        float4 vals = reinterpret_cast<const float4*>(segment_start)[base / 4 + vec_idx];
+                        val = fmaxf(val, fmaxf(fmaxf(vals.x, vals.y), fmaxf(vals.z, vals.w)));
+                    } else if (idx < segment_size) {
+                        for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
+                            val = fmaxf(val, segment_start[i]);
+                        }
                     }
                 }
             } else {
-                if (idx < segment_size) {
-                    for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
-                        val = (segment_start[i] > val) ? segment_start[i] : val;
+                size_t stride = blockDim.x * 4;
+                for (size_t base = 0; base < segment_size; base += stride) {
+                    size_t vec_idx = threadIdx.x;
+                    size_t idx = base + vec_idx * 4;
+
+                    if (idx < segment_size) {
+                        for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
+                            val = (segment_start[i] > val) ? segment_start[i] : val;
+                        }
                     }
                 }
             }
@@ -411,25 +435,35 @@ namespace lfs::core {
          */
         template <typename T>
         __device__ T vectorized_segment_reduce_min(const T* segment_start, size_t segment_size) {
-            size_t vec_idx = threadIdx.x;
-            size_t idx = vec_idx * 4;
-
             T val = std::numeric_limits<T>::infinity();
             if constexpr (std::is_same_v<T, float>) {
                 bool is_aligned = (reinterpret_cast<uintptr_t>(segment_start) % 16) == 0;
 
-                if (is_aligned && idx + 3 < segment_size) {
-                    float4 vals = reinterpret_cast<const float4*>(segment_start)[vec_idx];
-                    val = fminf(fminf(vals.x, vals.y), fminf(vals.z, vals.w));
-                } else if (idx < segment_size) {
-                    for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
-                        val = fminf(val, segment_start[i]);
+                // Grid-stride loop: Process entire segment across all threads
+                size_t stride = blockDim.x * 4;
+                for (size_t base = 0; base < segment_size; base += stride) {
+                    size_t vec_idx = threadIdx.x;
+                    size_t idx = base + vec_idx * 4;
+
+                    if (is_aligned && idx + 3 < segment_size) {
+                        float4 vals = reinterpret_cast<const float4*>(segment_start)[base / 4 + vec_idx];
+                        val = fminf(val, fminf(fminf(vals.x, vals.y), fminf(vals.z, vals.w)));
+                    } else if (idx < segment_size) {
+                        for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
+                            val = fminf(val, segment_start[i]);
+                        }
                     }
                 }
             } else {
-                if (idx < segment_size) {
-                    for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
-                        val = (segment_start[i] < val) ? segment_start[i] : val;
+                size_t stride = blockDim.x * 4;
+                for (size_t base = 0; base < segment_size; base += stride) {
+                    size_t vec_idx = threadIdx.x;
+                    size_t idx = base + vec_idx * 4;
+
+                    if (idx < segment_size) {
+                        for (size_t i = idx; i < segment_size && i < idx + 4; ++i) {
+                            val = (segment_start[i] < val) ? segment_start[i] : val;
+                        }
                     }
                 }
             }

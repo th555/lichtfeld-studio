@@ -149,12 +149,11 @@ TEST_F(TensorAdvancedTest, Concatenate) {
 
     compare_tensors(concatenated_custom, concatenated_torch, 1e-6f, 1e-7f, "Concatenate");
 
-    // Test mismatched shapes (should fail)
+    // Test mismatched shapes (should throw)
     std::vector<Tensor> mismatched;
     mismatched.push_back(Tensor::zeros({2, 3}, Device::CUDA));
     mismatched.push_back(Tensor::zeros({2, 4}, Device::CUDA));
-    auto invalid = Tensor::cat(std::move(mismatched), 0);
-    EXPECT_FALSE(invalid.is_valid());
+    EXPECT_THROW(Tensor::cat(std::move(mismatched), 0), std::invalid_argument);
 }
 
 // ============= Memory Info Tests =============

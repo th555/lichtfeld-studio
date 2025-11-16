@@ -50,14 +50,14 @@ namespace lfs::core {
                     src_dims.data(), target_dims.data(),
                     src_dims.size(), target_dims.size(),
                     result.numel(), 0);
-                cudaDeviceSynchronize();
+                // No sync - returns tensor
             } else if (src.dtype() == DataType::Float32) {
                 tensor_ops::launch_broadcast(
                     src.ptr<float>(), result.ptr<float>(),
                     src_dims.data(), target_dims.data(),
                     src_dims.size(), target_dims.size(),
                     result.numel(), 0);
-                cudaDeviceSynchronize();
+                // No sync - returns tensor
             } else {
                 LOG_ERROR("Unsupported dtype for CUDA broadcasting: {}", dtype_name(src.dtype()));
                 return Tensor();

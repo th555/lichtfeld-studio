@@ -113,5 +113,15 @@ namespace gs {
                 output.data_ptr<float>(),
                 L, H, W, h, w);
         }
+
+        // Manual forward interface (no autograd)
+        std::pair<torch::Tensor, BilateralGridSliceContext> bilateral_grid_slice_forward(
+            const torch::Tensor& grid,
+            const torch::Tensor& rgb) {
+            auto output = torch::zeros_like(rgb);
+            slice_forward_cuda(grid, rgb, output, true);
+            BilateralGridSliceContext ctx{grid, rgb};
+            return {output, ctx};
+        }
     } // namespace bilateral_grid
 } // namespace gs

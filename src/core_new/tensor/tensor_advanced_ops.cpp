@@ -47,7 +47,7 @@ namespace lfs::core {
         if (device_ == Device::CUDA) {
             tensor_ops::launch_cdist(ptr<float>(), other_same_device.ptr<float>(),
                                      result.ptr<float>(), N, M, D, p, 0);
-            CHECK_CUDA(cudaDeviceSynchronize());
+            // No sync - returns tensor
         } else {
             const float* a_data = ptr<float>();
             const float* b_data = other_same_device.ptr<float>();
@@ -515,7 +515,7 @@ namespace lfs::core {
                 tensor_ops::launch_sort_1d(sorted.ptr<float>(),
                                            reinterpret_cast<int64_t*>(indices.raw_ptr()),
                                            numel(), descending, 0);
-                CHECK_CUDA(cudaDeviceSynchronize());
+                // No sync - returns tensors
             } else {
                 // CPU fallback
                 auto values_vec = to_vector();
@@ -559,7 +559,7 @@ namespace lfs::core {
                                        reinterpret_cast<int64_t*>(indices.raw_ptr()),
                                        outer_size, dim_size, inner_size,
                                        dim, descending, 0);
-            CHECK_CUDA(cudaDeviceSynchronize());
+            // No sync - returns tensors
         } else {
             // CPU implementation
             const float* src_data = ptr<float>();

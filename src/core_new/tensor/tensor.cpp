@@ -5,6 +5,7 @@
 #include "internal/tensor_impl.hpp"
 #include "internal/tensor_ops.hpp"
 #include <cstring>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <fstream>
 #include <iomanip>
@@ -66,8 +67,11 @@ namespace lfs::core {
           is_contiguous_(true),
           device_(device),
           dtype_(dtype),
-          is_view_(true), // This is a view
+          is_view_(true),   // This is a view
+          stream_(nullptr), // Use default stream (stream 0) for all operations
           id_(next_id_++) {
+
+        compute_alignment(); // Compute alignment flags
 
         if (profiling_enabled_) {
             LOG_DEBUG("Created tensor #{} (non-owning view): shape={}, device={}, dtype={}",
@@ -86,6 +90,11 @@ namespace lfs::core {
           device_(other.device_),
           dtype_(other.dtype_),
           is_view_(other.is_view_),
+          is_aligned_16_(other.is_aligned_16_), // Copy alignment flags
+          is_aligned_128_(other.is_aligned_128_),
+          stream_(other.stream_), // Copy stream assignment
+          capacity_(other.capacity_),       // Copy capacity management
+          logical_size_(other.logical_size_),
           id_(next_id_++) {
 
         if (profiling_enabled_) {
@@ -95,13 +104,66 @@ namespace lfs::core {
         }
     }
 
-    // ============= Copy Assignment - SHALLOW COPY (LibTorch behavior) =============
+    // ============= Copy Assignment - Context-aware (Shallow or Deep) =============
     Tensor& Tensor::operator=(const Tensor& other) {
         if (this == &other) {
             return *this;
         }
 
-        // Shallow copy - share data via shared_ptr
+        // PyTorch semantics: slice/view assignment does deep copy, regular assignment does shallow copy
+        // Example: t1[0:5] = t2  -> deep copy into the slice
+        //          t1 = t2        -> shallow copy (both point to same data)
+
+        // If LHS is a view/slice and shapes match, do deep copy
+        if (is_view_ && is_valid() && other.is_valid() &&
+            shape_ == other.shape_ && dtype_ == other.dtype_) {
+
+            // Deep copy the data, accounting for storage offsets
+            if (numel() > 0) {
+                // Calculate actual data pointers accounting for storage offsets
+                void* dst_ptr = static_cast<char*>(data_) + storage_offset_ * dtype_size(dtype_);
+                const void* src_ptr = static_cast<const char*>(other.data_) +
+                                      other.storage_offset_ * dtype_size(other.dtype_);
+
+                if (device_ == Device::CUDA && other.device_ == Device::CUDA) {
+                    CHECK_CUDA(cudaMemcpyAsync(dst_ptr, src_ptr, bytes(), cudaMemcpyDeviceToDevice, stream_));
+                } else if (device_ == Device::CUDA && other.device_ == Device::CPU) {
+                    CHECK_CUDA(cudaMemcpyAsync(dst_ptr, src_ptr, bytes(), cudaMemcpyHostToDevice, stream_));
+                } else if (device_ == Device::CPU && other.device_ == Device::CUDA) {
+                    // GPU→CPU requires sync before copy
+                    if (other.stream_) {
+                        cudaStreamSynchronize(other.stream_);
+                    } else {
+                        cudaDeviceSynchronize();
+                    }
+                    CHECK_CUDA(cudaMemcpyAsync(dst_ptr, src_ptr, bytes(), cudaMemcpyDeviceToHost, stream_));
+                } else {
+                    std::memcpy(dst_ptr, src_ptr, bytes());
+                }
+
+                // Synchronize to ensure copy completes before we return
+                // (maintains blocking semantics for safety)
+                if (device_ == Device::CUDA || other.device_ == Device::CUDA) {
+                    if (stream_) {
+                        cudaStreamSynchronize(stream_);
+                    } else if (other.stream_) {
+                        cudaStreamSynchronize(other.stream_);
+                    } else {
+                        cudaDeviceSynchronize();
+                    }
+                }
+            }
+
+            if (profiling_enabled_) {
+                LOG_DEBUG("Deep copy assign (view): tensor #{} from #{}: shape={}, device={}, dtype={}, offset={}, src_offset={}",
+                          id_, other.id_, shape_.str(), device_name(device_), dtype_name(dtype_),
+                          storage_offset_, other.storage_offset_);
+            }
+
+            return *this;
+        }
+
+        // Otherwise do shallow copy - share data via shared_ptr (LibTorch behavior)
         data_ = other.data_;
         data_owner_ = other.data_owner_; // shared_ptr handles refcounting automatically
         shape_ = other.shape_;
@@ -111,6 +173,17 @@ namespace lfs::core {
         device_ = other.device_;
         dtype_ = other.dtype_;
         is_view_ = other.is_view_;
+        is_aligned_16_ = other.is_aligned_16_; // Copy alignment flags
+        is_aligned_128_ = other.is_aligned_128_;
+        stream_ = other.stream_; // Copy stream assignment
+        // capacity_ and logical_size_ apply to the specific buffer allocation
+        // When we're doing shallow copy (sharing buffer), we share these too
+        if (capacity_ != other.capacity_ && capacity_ > 1000000) {
+            LOG_WARN("Assignment operator: LOSING CAPACITY! this.capacity={} → other.capacity={}, this.data_={}, other.data_={}",
+                     capacity_, other.capacity_, data_, other.data_);
+        }
+        capacity_ = other.capacity_;
+        logical_size_ = other.logical_size_;
         id_ = next_id_++;
 
         if (profiling_enabled_) {
@@ -133,6 +206,11 @@ namespace lfs::core {
           device_(other.device_),
           dtype_(other.dtype_),
           is_view_(std::exchange(other.is_view_, false)),
+          is_aligned_16_(std::exchange(other.is_aligned_16_, false)),
+          is_aligned_128_(std::exchange(other.is_aligned_128_, false)),
+          stream_(std::exchange(other.stream_, nullptr)),
+          capacity_(std::exchange(other.capacity_, 0)),
+          logical_size_(std::exchange(other.logical_size_, 0)),
           id_(other.id_) {
 
         if (profiling_enabled_) {
@@ -143,6 +221,57 @@ namespace lfs::core {
     // ============= Move Assignment =============
     Tensor& Tensor::operator=(Tensor&& other) noexcept {
         if (this != &other) {
+            // PyTorch semantics: slice/view assignment does deep copy even for rvalues
+            // This handles: t1.slice(0, 0, 5) = t2.slice(0, 5, 10)
+            // where the RHS is a temporary view
+
+            if (is_view_ && is_valid() && other.is_valid() &&
+                shape_ == other.shape_ && dtype_ == other.dtype_) {
+
+                // Deep copy the data from the temporary view
+                if (numel() > 0) {
+                    void* dst_ptr = static_cast<char*>(data_) + storage_offset_ * dtype_size(dtype_);
+                    const void* src_ptr = static_cast<const char*>(other.data_) +
+                                          other.storage_offset_ * dtype_size(other.dtype_);
+
+                    if (device_ == Device::CUDA && other.device_ == Device::CUDA) {
+                        CHECK_CUDA(cudaMemcpyAsync(dst_ptr, src_ptr, bytes(), cudaMemcpyDeviceToDevice, stream_));
+                    } else if (device_ == Device::CUDA && other.device_ == Device::CPU) {
+                        CHECK_CUDA(cudaMemcpyAsync(dst_ptr, src_ptr, bytes(), cudaMemcpyHostToDevice, stream_));
+                    } else if (device_ == Device::CPU && other.device_ == Device::CUDA) {
+                        // GPU→CPU requires sync before copy
+                        if (other.stream_) {
+                            cudaStreamSynchronize(other.stream_);
+                        } else {
+                            cudaDeviceSynchronize();
+                        }
+                        CHECK_CUDA(cudaMemcpyAsync(dst_ptr, src_ptr, bytes(), cudaMemcpyDeviceToHost, stream_));
+                    } else {
+                        std::memcpy(dst_ptr, src_ptr, bytes());
+                    }
+
+                    // Synchronize to ensure copy completes before we return
+                    // (maintains blocking semantics for safety)
+                    if (device_ == Device::CUDA || other.device_ == Device::CUDA) {
+                        if (stream_) {
+                            cudaStreamSynchronize(stream_);
+                        } else if (other.stream_) {
+                            cudaStreamSynchronize(other.stream_);
+                        } else {
+                            cudaDeviceSynchronize();
+                        }
+                    }
+                }
+
+                if (profiling_enabled_) {
+                    LOG_DEBUG("Deep copy move assign (view): tensor #{} from #{}: shape={}, device={}, dtype={}",
+                              id_, other.id_, shape_.str(), device_name(device_), dtype_name(dtype_));
+                }
+
+                return *this;
+            }
+
+            // Normal move assignment - transfer ownership
             data_ = std::exchange(other.data_, nullptr);
             data_owner_ = std::move(other.data_owner_);
             shape_ = std::move(other.shape_);
@@ -152,6 +281,11 @@ namespace lfs::core {
             device_ = other.device_;
             dtype_ = other.dtype_;
             is_view_ = std::exchange(other.is_view_, false);
+            is_aligned_16_ = std::exchange(other.is_aligned_16_, false);
+            is_aligned_128_ = std::exchange(other.is_aligned_128_, false);
+            stream_ = std::exchange(other.stream_, nullptr);
+            capacity_ = std::exchange(other.capacity_, 0);
+            logical_size_ = std::exchange(other.logical_size_, 0);
             id_ = other.id_;
 
             if (profiling_enabled_) {
@@ -254,7 +388,7 @@ namespace lfs::core {
                 dtype_,
                 nullptr);
 
-            cudaDeviceSynchronize();
+            // No sync needed - cudaFree is implicitly synchronizing
             cudaFree(d_shape);
             cudaFree(d_strides);
         } else {
@@ -420,7 +554,7 @@ namespace lfs::core {
     }
 
     // ============= Device Transfer =============
-    Tensor Tensor::to(Device device) const {
+    Tensor Tensor::to(Device device, cudaStream_t stream) const {
         if (!is_valid()) {
             LOG_ERROR("Cannot transfer invalid tensor to device");
             return Tensor();
@@ -457,11 +591,11 @@ namespace lfs::core {
                 // Account for storage offset
                 const char* src = static_cast<const char*>(data_) + storage_offset_ * dtype_size(dtype_);
 
-                // FAST PATH: Rank-3 uses optimized kernel with immediate parameters (no device memory allocation!)
-                // This eliminates 2x cudaMalloc + 2x cudaMemcpy overhead (~0.5-1ms saved)
+                // FAST PATHS: Use optimized kernels with immediate parameters (no device memory allocation!)
+                // This eliminates 2x cudaMalloc + 2x cudaMemcpy overhead (~0.5-1ms saved per upload)
                 // ASYNC: Kernel launches asynchronously - CUDA runtime handles synchronization automatically
-                if (shape_.rank() == 3) {
-                    LOG_DEBUG("Using optimized rank-3 strided upload (no metadata allocation)");
+                if (shape_.rank() <= 3) {
+                    LOG_DEBUG("Using optimized rank-{} strided upload (no metadata allocation)", shape_.rank());
 
                     // Pass host pointers directly - the launcher will use them as immediate kernel parameters
                     tensor_ops::launch_strided_upload(
@@ -476,14 +610,16 @@ namespace lfs::core {
                     );
 
                     // NO SYNC: Let CUDA runtime handle synchronization when data is accessed
-                    // The pinned memory (src) is safe because:
+                    // The pinned memory (src) is hopefully safe because:
                     // 1. It's managed by shared_ptr in data_owner_
-                    // 2. cudaFreeHost() blocks until kernel completes
-                    LOG_DEBUG("Optimized rank-3 strided upload launched (async): {} elements", numel());
+                    // 2. Stream-aware allocator tracks the stream and won't reuse until complete
+                    // Update source tensor's stream for deallocator
+                    const_cast<Tensor*>(this)->stream_ = nullptr; // Used default stream
+                    LOG_DEBUG("Optimized rank-{} strided upload launched (async): {} elements", shape_.rank(), numel());
                     return t;
                 }
 
-                // GENERIC PATH: For rank != 3, allocate device memory for metadata
+                // GENERIC PATH: For rank > 3, allocate device memory for metadata
                 LOG_DEBUG("Using generic strided upload (requires metadata allocation for rank={})", shape_.rank());
 
                 size_t* d_shape;
@@ -515,6 +651,9 @@ namespace lfs::core {
                 CHECK_CUDA(cudaFree(d_shape));
                 CHECK_CUDA(cudaFree(d_strides));
 
+                // CRITICAL: Update source tensor's stream for deallocator
+                const_cast<Tensor*>(this)->stream_ = nullptr; // Used default stream
+
                 LOG_DEBUG("Generic strided upload launched (async): {} elements", numel());
                 return t;
             }
@@ -528,18 +667,109 @@ namespace lfs::core {
         // Account for storage offset
         const char* src = static_cast<const char*>(data_) + storage_offset_ * dtype_size(dtype_);
 
-        LOG_DEBUG("to(Device): storage_offset_={}, dtype_size={}, src_offset_bytes={}, bytes_to_copy={}",
-                  storage_offset_, dtype_size(dtype_), storage_offset_ * dtype_size(dtype_), bytes());
+        //LOG_DEBUG("to(Device): storage_offset_={}, dtype_size={}, src_offset_bytes={}, bytes_to_copy={}",
+        //          storage_offset_, dtype_size(dtype_), storage_offset_ * dtype_size(dtype_), bytes());
 
         if (device_ == Device::CPU && device == Device::CUDA) {
             // Use cudaMemcpyAsync with pinned memory for maximum PCIe bandwidth (~7-11 GB/s)
             // CPU tensor now uses pinned memory (allocated via PinnedMemoryAllocator)
-            CHECK_CUDA(cudaMemcpyAsync(t.data_, src, bytes(), cudaMemcpyHostToDevice, 0));
-            CHECK_CUDA(cudaDeviceSynchronize()); // Ensure transfer completes before returning
+
+            // PROFILING: Track H2D uploads to identify bottlenecks
+            static std::atomic<uint64_t> h2d_counter{0};
+            static std::atomic<uint64_t> h2d_bytes{0};
+            static std::atomic<uint64_t> h2d_tiny{0};      // < 64 bytes (metadata)
+            static std::atomic<uint64_t> h2d_small{0};     // 64B - 1KB
+            static std::atomic<uint64_t> h2d_medium{0};    // 1KB - 1MB
+            static std::atomic<uint64_t> h2d_large{0};     // > 1MB (images)
+
+            uint64_t current_count = h2d_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+            uint64_t upload_bytes = bytes();
+            h2d_bytes.fetch_add(upload_bytes, std::memory_order_relaxed);
+
+            // Categorize by size
+            if (upload_bytes < 64) {
+                h2d_tiny.fetch_add(1, std::memory_order_relaxed);
+            } else if (upload_bytes < 1024) {
+                h2d_small.fetch_add(1, std::memory_order_relaxed);
+            } else if (upload_bytes < 1024*1024) {
+                h2d_medium.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                h2d_large.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            // Log details for TINY uploads to understand the bottleneck
+            /*
+            if (upload_bytes < 64) {
+                std::string shape_str = "[";
+                for (size_t i = 0; i < shape_.rank(); ++i) {
+                    if (i > 0) shape_str += ", ";
+                    shape_str += std::to_string(shape_.dims()[i]);
+                }
+                shape_str += "]";
+
+                if (current_count <= 100) {
+                    // First 100 tiny uploads
+                    LOG_WARN("TINY H2D Upload #{}: {} bytes, shape={}",
+                             current_count, upload_bytes, shape_str);
+                } else if (current_count >= 500 && current_count <= 510) {
+                    // Tiny uploads DURING TRAINING (after initialization) - these are the bottleneck!
+                    LOG_WARN("TRAINING TINY H2D Upload #{}: {} bytes, shape={} - THIS IS THE BOTTLENECK!",
+                             current_count, upload_bytes, shape_str);
+                }
+
+                // SPECIFIC TRACKING FOR 32-BYTE UPLOADS (8 floats)
+                if (upload_bytes == 32) {
+                    static std::atomic<uint64_t> h2d_32byte_counter{0};
+                    uint64_t count_32 = h2d_32byte_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (count_32 <= 20 || (count_32 >= 400 && count_32 <= 420)) {
+                        LOG_ERROR("32-BYTE H2D Upload #{}: shape={}, dtype={}, numel={}",
+                                 count_32, shape_str, static_cast<int>(dtype_), numel());
+                    }
+                }
+
+                // SPECIFIC TRACKING FOR 4-BYTE UPLOADS (single scalars)
+                if (upload_bytes == 4) {
+                    static std::atomic<uint64_t> h2d_4byte_counter{0};
+                    uint64_t count_4 = h2d_4byte_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (count_4 <= 20 || (count_4 >= 500 && count_4 <= 520)) {
+                        LOG_ERROR("4-BYTE H2D Upload #{}: shape={}, dtype={}, numel={}",
+                                 count_4, shape_str, static_cast<int>(dtype_), numel());
+                    }
+                }
+            } else if (current_count % 1000 == 0) {
+                LOG_WARN("H2D Upload #{}: {:.1f} MB total | Tiny(<64B): {}, Small(64B-1KB): {}, Medium(1KB-1MB): {}, Large(>1MB): {}",
+                         current_count, h2d_bytes.load() / 1024.0 / 1024.0,
+                         h2d_tiny.load(), h2d_small.load(), h2d_medium.load(), h2d_large.load());
+            }
+            */
+
+            cudaStream_t transfer_stream = stream ? stream : 0;
+            CHECK_CUDA(cudaMemcpyAsync(t.data_, src, bytes(), cudaMemcpyHostToDevice, transfer_stream));
+
+            // CRITICAL: Update source tensor's stream so deallocator knows which stream used this memory
+            // This is needed for the stream-aware pinned memory allocator
+            if (stream) {
+                const_cast<Tensor*>(this)->stream_ = stream;
+            }
+
+            // If stream is provided, caller is responsible for sync
+            if (!stream) {
+                CHECK_CUDA(cudaDeviceSynchronize()); // Ensure transfer completes before returning
+            }
         } else if (device_ == Device::CUDA && device == Device::CPU) {
+            // API BOUNDARY: Sync before GPU→CPU transfer
+            if (stream) {
+                cudaStreamSynchronize(stream);
+            } else {
+                cudaDeviceSynchronize();
+            }
             // Async transfer for GPU→CPU as well (destination is pinned)
-            CHECK_CUDA(cudaMemcpyAsync(t.data_, src, bytes(), cudaMemcpyDeviceToHost, 0));
-            CHECK_CUDA(cudaDeviceSynchronize()); // Ensure transfer completes before returning
+            cudaStream_t transfer_stream = stream ? stream : 0;
+            CHECK_CUDA(cudaMemcpyAsync(t.data_, src, bytes(), cudaMemcpyDeviceToHost, transfer_stream));
+
+            if (!stream) {
+                CHECK_CUDA(cudaDeviceSynchronize()); // Ensure transfer completes before returning
+            }
         }
 
         return t;
@@ -570,7 +800,7 @@ namespace lfs::core {
         if (device_ == Device::CUDA) {                                                                                                       \
             tensor_ops::launch_convert_type<FROM_TYPE, TO_TYPE>(                                                                             \
                 ptr<FROM_TYPE>(), result.ptr<TO_TYPE>(), numel(), 0);                                                                        \
-            CHECK_CUDA(cudaDeviceSynchronize());                                                                                             \
+            /* No sync - tensor-to-tensor operation */                                                                                       \
             return result;                                                                                                                   \
         }                                                                                                                                    \
         /* CPU fallback */                                                                                                                   \
@@ -600,7 +830,7 @@ namespace lfs::core {
                 // Use generic conversion (unsigned char -> float)
                 tensor_ops::launch_convert_type<unsigned char, float>(
                     ptr<unsigned char>(), result.ptr<float>(), numel(), 0);
-                CHECK_CUDA(cudaDeviceSynchronize());
+                // No sync - tensor-to-tensor GPU operation
             } else {
                 const unsigned char* src = ptr<unsigned char>();
                 float* dst = result.ptr<float>();
@@ -639,7 +869,32 @@ namespace lfs::core {
         }
 
         // Float32 <-> Int32
-        CONVERT_DTYPE_CUDA(float, int, DataType::Float32, DataType::Int32)
+        // DEBUG: Add logging for Float32->Int32 conversion
+        if (dtype_ == DataType::Float32 && dtype == DataType::Int32) {
+            auto result = empty(shape_, device_, DataType::Int32);
+            if (numel() == 0)
+                return result;
+
+            // Read source value before conversion (for debugging)
+            if (numel() == 1 && device_ == Device::CUDA) {
+                float src_val;
+                cudaMemcpy(&src_val, ptr<float>(), sizeof(float), cudaMemcpyDeviceToHost);
+                printf("[to Float32->Int32] Source value: %f\n", src_val);
+            }
+
+            if (device_ == Device::CUDA) {
+                tensor_ops::launch_convert_type<float, int>(
+                    ptr<float>(), result.ptr<int>(), numel(), 0);
+                // No sync - tensor-to-tensor GPU operation
+            } else {
+                const float* src = ptr<float>();
+                int* dst = result.ptr<int>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst[i] = static_cast<int>(src[i]);
+                }
+            }
+            return result;
+        }
         CONVERT_DTYPE_CUDA(int, float, DataType::Int32, DataType::Float32)
 
         // UInt8 conversions
@@ -656,14 +911,196 @@ namespace lfs::core {
             return clone();
         }
 
+        // Bool <-> Int32: Manual conversion (bool != 0 logic)
+        if (dtype_ == DataType::Int32 && dtype == DataType::Bool) {
+            auto result = empty(shape_, device_, DataType::Bool);
+            if (numel() == 0)
+                return result;
+
+            if (device_ == Device::CUDA) {
+                // Copy to CPU, convert, copy back
+                auto result_cpu = empty(shape_, Device::CPU, DataType::Bool);
+                std::vector<int> temp(numel());
+                CHECK_CUDA(cudaMemcpy(temp.data(), ptr<int>(), bytes(), cudaMemcpyDeviceToHost));
+
+                unsigned char* dst_cpu = result_cpu.ptr<unsigned char>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst_cpu[i] = (temp[i] != 0) ? 1 : 0;
+                }
+
+                CHECK_CUDA(cudaMemcpy(result.ptr<unsigned char>(), result_cpu.ptr<unsigned char>(),
+                                      numel() * sizeof(unsigned char), cudaMemcpyHostToDevice));
+            } else {
+                const int* src = ptr<int>();
+                unsigned char* dst = result.ptr<unsigned char>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst[i] = (src[i] != 0) ? 1 : 0;
+                }
+            }
+            return result;
+        }
+
+        if (dtype_ == DataType::Bool && dtype == DataType::Int32) {
+            auto result = empty(shape_, device_, DataType::Int32);
+            if (numel() == 0)
+                return result;
+
+            if (device_ == Device::CUDA) {
+                // Use generic conversion (unsigned char -> int)
+                tensor_ops::launch_convert_type<unsigned char, int>(
+                    ptr<unsigned char>(), result.ptr<int>(), numel(), 0);
+                // No sync - tensor-to-tensor GPU operation
+            } else {
+                const unsigned char* src = ptr<unsigned char>();
+                int* dst = result.ptr<int>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst[i] = static_cast<int>(src[i]);
+                }
+            }
+            return result;
+        }
+
+        // Bool -> Int64
+        if (dtype_ == DataType::Bool && dtype == DataType::Int64) {
+            auto result = empty(shape_, device_, DataType::Int64);
+            if (numel() == 0)
+                return result;
+
+            if (device_ == Device::CUDA) {
+                // Use generic conversion (unsigned char -> int64_t)
+                tensor_ops::launch_convert_type<unsigned char, int64_t>(
+                    ptr<unsigned char>(), result.ptr<int64_t>(), numel(), 0);
+                // No sync - tensor-to-tensor GPU operation
+            } else {
+                const unsigned char* src = ptr<unsigned char>();
+                int64_t* dst = result.ptr<int64_t>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst[i] = static_cast<int64_t>(src[i]);
+                }
+            }
+            return result;
+        }
+
+        // Int64 -> Bool
+        if (dtype_ == DataType::Int64 && dtype == DataType::Bool) {
+            auto result = empty(shape_, device_, DataType::Bool);
+            if (numel() == 0)
+                return result;
+
+            if (device_ == Device::CUDA) {
+                // Copy to CPU, convert, copy back
+                auto result_cpu = empty(shape_, Device::CPU, DataType::Bool);
+                std::vector<int64_t> temp(numel());
+                CHECK_CUDA(cudaMemcpy(temp.data(), ptr<int64_t>(), bytes(), cudaMemcpyDeviceToHost));
+
+                unsigned char* dst_cpu = result_cpu.ptr<unsigned char>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst_cpu[i] = (temp[i] != 0) ? 1 : 0;
+                }
+
+                CHECK_CUDA(cudaMemcpy(result.ptr<unsigned char>(), result_cpu.ptr<unsigned char>(),
+                                      numel() * sizeof(unsigned char), cudaMemcpyHostToDevice));
+            } else {
+                const int64_t* src = ptr<int64_t>();
+                unsigned char* dst = result.ptr<unsigned char>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst[i] = (src[i] != 0) ? 1 : 0;
+                }
+            }
+            return result;
+        }
+
         CONVERT_DTYPE_CUDA(int64_t, uint8_t, DataType::Int64, DataType::UInt8)
         CONVERT_DTYPE_CUDA(uint8_t, int64_t, DataType::UInt8, DataType::Int64)
+
+        // Bool -> Float16
+        if (dtype_ == DataType::Bool && dtype == DataType::Float16) {
+            auto result = empty(shape_, device_, DataType::Float16);
+            if (numel() == 0)
+                return result;
+
+            if (device_ == Device::CUDA) {
+                // Use generic conversion (unsigned char -> __half)
+                tensor_ops::launch_convert_type<unsigned char, __half>(
+                    ptr<unsigned char>(), result.ptr<__half>(), numel(), 0);
+                // No sync - tensor-to-tensor GPU operation
+            } else {
+                const unsigned char* src = ptr<unsigned char>();
+                __half* dst = result.ptr<__half>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst[i] = __float2half(static_cast<float>(src[i]));
+                }
+            }
+            return result;
+        }
+
+        // Float16 -> Bool
+        if (dtype_ == DataType::Float16 && dtype == DataType::Bool) {
+            auto result = empty(shape_, device_, DataType::Bool);
+            if (numel() == 0)
+                return result;
+
+            if (device_ == Device::CUDA) {
+                // Copy to CPU, convert, copy back
+                auto result_cpu = empty(shape_, Device::CPU, DataType::Bool);
+                std::vector<__half> temp(numel());
+                CHECK_CUDA(cudaMemcpy(temp.data(), ptr<__half>(), bytes(), cudaMemcpyDeviceToHost));
+                CHECK_CUDA(cudaDeviceSynchronize()); // Ensure copy completes
+
+                unsigned char* dst_cpu = result_cpu.ptr<unsigned char>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst_cpu[i] = (__half2float(temp[i]) != 0.0f) ? 1 : 0;
+                }
+
+                CHECK_CUDA(cudaMemcpy(result.ptr<unsigned char>(), result_cpu.ptr<unsigned char>(),
+                                      numel() * sizeof(unsigned char), cudaMemcpyHostToDevice));
+                CHECK_CUDA(cudaDeviceSynchronize()); // Ensure copy completes
+            } else {
+                const __half* src = ptr<__half>();
+                unsigned char* dst = result.ptr<unsigned char>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst[i] = (__half2float(src[i]) != 0.0f) ? 1 : 0;
+                }
+            }
+            return result;
+        }
 
         // Int64 conversions
         CONVERT_DTYPE_CUDA(int64_t, float, DataType::Int64, DataType::Float32)
         CONVERT_DTYPE_CUDA(float, int64_t, DataType::Float32, DataType::Int64)
         CONVERT_DTYPE_CUDA(int, int64_t, DataType::Int32, DataType::Int64)
-        CONVERT_DTYPE_CUDA(int64_t, int, DataType::Int64, DataType::Int32)
+
+        // Int64 -> Int32: CRITICAL SYNCHRONIZATION for item() reads
+        // Without sync, item<int>() may read before conversion completes, getting garbage
+        if (dtype_ == DataType::Int64 && dtype == DataType::Int32) {
+            auto result = empty(shape_, device_, DataType::Int32);
+            if (numel() == 0)
+                return result;
+
+            if (device_ == Device::CUDA) {
+                tensor_ops::launch_convert_type<int64_t, int>(
+                    ptr<int64_t>(), result.ptr<int>(), numel(), 0);
+                // CRITICAL: Sync to ensure conversion completes before item() reads
+                cudaDeviceSynchronize();
+            } else {
+                const int64_t* src = ptr<int64_t>();
+                int* dst = result.ptr<int>();
+                for (size_t i = 0; i < numel(); ++i) {
+                    dst[i] = static_cast<int>(src[i]);
+                }
+            }
+            return result;
+        }
+
+        // Float16 conversions
+        CONVERT_DTYPE_CUDA(float, __half, DataType::Float32, DataType::Float16)
+        CONVERT_DTYPE_CUDA(__half, float, DataType::Float16, DataType::Float32)
+        CONVERT_DTYPE_CUDA(int, __half, DataType::Int32, DataType::Float16)
+        CONVERT_DTYPE_CUDA(__half, int, DataType::Float16, DataType::Int32)
+        CONVERT_DTYPE_CUDA(int64_t, __half, DataType::Int64, DataType::Float16)
+        CONVERT_DTYPE_CUDA(__half, int64_t, DataType::Float16, DataType::Int64)
+        CONVERT_DTYPE_CUDA(uint8_t, __half, DataType::UInt8, DataType::Float16)
+        CONVERT_DTYPE_CUDA(__half, uint8_t, DataType::Float16, DataType::UInt8)
 
 #undef CONVERT_DTYPE_CUDA
 
@@ -696,9 +1133,88 @@ namespace lfs::core {
             return *this;
         }
 
+        // CRITICAL FIX: For non-contiguous tensors (from slice/view operations),
+        // we must respect strides and fill only the elements in the view
+        if (!is_contiguous()) {
+            // For non-contiguous tensors, iterate and use operator[] which respects strides
+            const size_t n = numel();
+
+            // For CUDA non-contiguous tensors: use CUDA kernel that respects strides
+            if (device_ == Device::CUDA) {
+                // Use CUDA kernel for strided fill (much faster than element-by-element cudaMemcpy)
+                if (dtype_ == DataType::Float32) {
+                    tensor_ops::launch_fill_strided<float>(
+                        static_cast<float*>(data_), value, shape_.dims(), strides_, storage_offset_, n, nullptr);
+                } else if (dtype_ == DataType::Int32) {
+                    int int_val = static_cast<int>(value);
+                    tensor_ops::launch_fill_strided<int>(
+                        static_cast<int*>(data_), int_val, shape_.dims(), strides_, storage_offset_, n, nullptr);
+                } else if (dtype_ == DataType::Bool) {
+                    unsigned char bool_val = (value != 0.0f) ? 1 : 0;
+                    tensor_ops::launch_fill_strided<unsigned char>(
+                        static_cast<unsigned char*>(data_), bool_val, shape_.dims(), strides_, storage_offset_, n, nullptr);
+                }
+                return *this;
+            }
+
+            // CPU non-contiguous: manually compute offsets using strides
+            std::vector<size_t> indices(ndim(), 0);
+            for (size_t linear_idx = 0; linear_idx < n; ++linear_idx) {
+                // Convert linear index to multi-dimensional indices
+                size_t remaining = linear_idx;
+                for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+                    indices[d] = remaining % shape_[d];
+                    remaining /= shape_[d];
+                }
+
+                // Calculate physical offset and set value
+                size_t offset = storage_offset_;
+                for (size_t d = 0; d < ndim(); ++d) {
+                    offset += indices[d] * strides_[d];
+                }
+
+                if (dtype_ == DataType::Float32) {
+                    static_cast<float*>(data_)[offset] = value;
+                } else if (dtype_ == DataType::Int32) {
+                    static_cast<int*>(data_)[offset] = static_cast<int>(value);
+                } else if (dtype_ == DataType::Bool) {
+                    static_cast<unsigned char*>(data_)[offset] = (value != 0.0f) ? 1 : 0;
+                }
+            }
+            return *this;
+        }
+
+        // For contiguous tensors, use the fast path with memcpy
         // Account for storage offset
         void* dest = static_cast<char*>(data_) + storage_offset_ * dtype_size(dtype_);
 
+        // Handle Bool dtype
+        if (dtype_ == DataType::Bool) {
+            unsigned char bool_val = (value != 0.0f) ? 1 : 0;
+            if (device_ == Device::CUDA) {
+                std::vector<unsigned char> temp(numel(), bool_val);
+                CHECK_CUDA(cudaMemcpy(dest, temp.data(), bytes(), cudaMemcpyHostToDevice));
+            } else {
+                unsigned char* data = static_cast<unsigned char*>(dest);
+                std::fill(data, data + numel(), bool_val);
+            }
+            return *this;
+        }
+
+        // Handle Int32 dtype
+        if (dtype_ == DataType::Int32) {
+            int int_val = static_cast<int>(value);
+            if (device_ == Device::CUDA) {
+                std::vector<int> temp(numel(), int_val);
+                CHECK_CUDA(cudaMemcpy(dest, temp.data(), bytes(), cudaMemcpyHostToDevice));
+            } else {
+                int* data = static_cast<int*>(dest);
+                std::fill(data, data + numel(), int_val);
+            }
+            return *this;
+        }
+
+        // Handle Float32 dtype (original code)
         if (device_ == Device::CUDA) {
             std::vector<float> temp(numel(), value);
             CHECK_CUDA(cudaMemcpy(dest, temp.data(), bytes(), cudaMemcpyHostToDevice));
@@ -747,8 +1263,8 @@ namespace lfs::core {
 
     Tensor Tensor::cat(const Tensor& other, int dim) const {
         std::vector<Tensor> tensors;
-        tensors.push_back(clone());
-        tensors.push_back(other.clone());
+        tensors.push_back(*this);
+        tensors.push_back(other);
         return Tensor::cat(tensors, dim);
     }
 
@@ -838,12 +1354,12 @@ namespace lfs::core {
 
         if (device_ == Device::CUDA) {
             if (dtype_ == DataType::Float32) {
-                tensor_ops::launch_clamp_scalar(ptr<float>(), min_val, max_val, numel(), 0);
+                tensor_ops::launch_clamp_scalar(ptr<float>(), min_val, max_val, numel(), stream_);
             } else if (dtype_ == DataType::Int32) {
                 tensor_ops::launch_clamp_scalar_int(ptr<int>(),
                                                     static_cast<int>(min_val),
                                                     static_cast<int>(max_val),
-                                                    numel(), 0);
+                                                    numel(), stream_);
             }
         } else {
             if (dtype_ == DataType::Float32) {
@@ -893,7 +1409,7 @@ namespace lfs::core {
         if (device_ == Device::CUDA) {
             tensor_ops::launch_cumsum(result.raw_ptr(), shape_.dims().data(),
                                       shape_.rank(), dim, dtype_, nullptr);
-            cudaDeviceSynchronize();
+            // No sync - returns tensor, not API boundary
         } else {
             if (dtype_ == DataType::Float32) {
                 float* data = result.ptr<float>();
@@ -1114,6 +1630,8 @@ namespace lfs::core {
         const char* data_ptr = static_cast<const char*>(data_) + storage_offset_ * dtype_size(dtype_);
 
         if (device_ == Device::CUDA) {
+            // API BOUNDARY: Sync before reading value from GPU
+            cudaDeviceSynchronize();
             CHECK_CUDA(cudaMemcpy(&value, data_ptr, sizeof(float), cudaMemcpyDeviceToHost));
         } else {
             value = *static_cast<const float*>(static_cast<const void*>(data_ptr));
@@ -1133,6 +1651,8 @@ namespace lfs::core {
         values.resize(n);
 
         if (device_ == Device::CUDA) {
+            // API BOUNDARY: Sync before reading from GPU
+            cudaDeviceSynchronize();
             CHECK_CUDA(cudaMemcpy(values.data(), data_, n * sizeof(float),
                                   cudaMemcpyDeviceToHost));
         } else {
@@ -1196,6 +1716,8 @@ namespace lfs::core {
         const char* src = static_cast<const char*>(data_) + storage_offset_ * dtype_size(dtype_);
 
         if (device_ == Device::CUDA) {
+            // API BOUNDARY: Sync before reading from GPU
+            cudaDeviceSynchronize();
             CHECK_CUDA(cudaMemcpy(result.data(), src, bytes(), cudaMemcpyDeviceToHost));
         } else {
             std::memcpy(result.data(), src, bytes());
@@ -1259,8 +1781,14 @@ namespace lfs::core {
             return int_tensor.to_vector_int();
         }
 
+        // Handle Int64 by converting to Int32
+        if (dtype_ == DataType::Int64) {
+            auto int_tensor = to(DataType::Int32);
+            return int_tensor.to_vector_int();
+        }
+
         if (dtype_ != DataType::Int32) {
-            LOG_ERROR("to_vector_int only supports int32 and bool tensors, got {}",
+            LOG_ERROR("to_vector_int only supports int32, int64, and bool tensors, got {}",
                       dtype_name(dtype_));
             return {};
         }
@@ -1514,6 +2042,94 @@ namespace lfs::core {
         }
 
         return true;
+    }
+
+    // ============= Capacity Management =============
+
+    void Tensor::reserve(size_t new_capacity) {
+        // Validate tensor state
+        if (!data_owner_) {
+            throw TensorError("reserve() requires an owning tensor (not a view)", this);
+        }
+        if (shape_.rank() == 0) {
+            throw TensorError("reserve() requires tensor with at least 1 dimension", this);
+        }
+
+        // Get current size (use shape_[0], not logical_size_ which may be stale/uninitialized)
+        const size_t current_rows = shape_[0];
+
+        // If already at or above requested capacity, just update logical_size_ and return
+        if (capacity_ >= new_capacity) {
+            // Make sure logical_size_ is correct (in case reserve was called after resize)
+            logical_size_ = current_rows;
+            LOG_DEBUG("Tensor #{}: reserve({}) skipped, already have capacity {} (current size {})",
+                      id_, new_capacity, capacity_, current_rows);
+            return;
+        }
+
+        LOG_DEBUG("Tensor #{}: reserve({}) starting (current size {}, capacity {})",
+                  id_, new_capacity, current_rows, capacity_);
+
+        // Calculate sizes
+        const size_t row_size = numel() / current_rows; // elements per "row"
+        const size_t new_total_elements = new_capacity * row_size;
+        const size_t element_size = dtype_size(dtype_);
+        const size_t new_bytes = new_total_elements * element_size;
+
+        LOG_DEBUG("  Allocating: {} rows × {} elements/row × {} bytes/elem = {} MB",
+                  new_capacity, row_size, element_size, new_bytes / (1024.0 * 1024.0));
+
+        // First, explicitly release the old buffer to avoid double allocation
+        // This ensures the old buffer is freed BEFORE we allocate the new one
+        void* old_data = data_;
+        std::shared_ptr<void> old_owner = data_owner_;  // Keep reference temporarily
+
+        // Allocate new buffer
+        void* new_data = nullptr;
+        try {
+            if (device_ == Device::CUDA) {
+                CHECK_CUDA(cudaMalloc(&new_data, new_bytes));
+                LOG_DEBUG("  ✓ CUDA allocation succeeded: {} MB at {}", new_bytes / (1024.0 * 1024.0), new_data);
+            } else {
+                new_data = std::malloc(new_bytes);
+                if (!new_data) {
+                    throw TensorError("Failed to allocate CPU memory for reserve()", this);
+                }
+                LOG_DEBUG("  ✓ CPU allocation succeeded: {} MB at {}", new_bytes / (1024.0 * 1024.0), new_data);
+            }
+        } catch (const std::exception& e) {
+            LOG_ERROR("  ✗ Allocation failed: {}", e.what());
+            throw;
+        }
+
+        // Copy existing data
+        if (old_data && numel() > 0) {
+            const size_t copy_bytes = numel() * element_size;
+            if (device_ == Device::CUDA) {
+                CHECK_CUDA(cudaMemcpy(new_data, old_data, copy_bytes, cudaMemcpyDeviceToDevice));
+            } else {
+                std::memcpy(new_data, old_data, copy_bytes);
+            }
+        }
+
+        // Update tensor state with new buffer
+        data_ = new_data;
+        data_owner_ = std::shared_ptr<void>(new_data, [device = device_](void* ptr) {
+            if (device == Device::CUDA) {
+                cudaFree(ptr);
+            } else {
+                std::free(ptr);
+            }
+        });
+        capacity_ = new_capacity;
+        logical_size_ = current_rows;  // Set to actual current size (from shape_[0])
+
+        // Explicitly release old buffer AFTER copy is complete
+        // This ensures we don't have both buffers alive at the same time
+        old_owner.reset();  // Decrement ref count, potentially freeing old buffer immediately
+
+        LOG_DEBUG("✓ Tensor #{}: reserve({}) SUCCEEDED - capacity now {}, size {} ({:.1f}% utilization)",
+                  id_, new_capacity, capacity_, current_rows, 100.0 * current_rows / capacity_);
     }
 
     // ============= Error Classes =============

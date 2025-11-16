@@ -146,7 +146,7 @@ namespace lfs::loader {
             }
 
             // Create dataset configuration
-            gs::param::DatasetConfig dataset_config;
+            lfs::core::param::DatasetConfig dataset_config;
             dataset_config.data_path = path;
             dataset_config.images = options.images_folder;
             dataset_config.resize_factor = options.resize_factor;
