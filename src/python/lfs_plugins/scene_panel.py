@@ -116,7 +116,6 @@ class ScenePanel(RmlPanel):
         self._context_menu = None
         self._context_menu_node = None
         self._drag_source = None
-        self._hovered_node = None
         self._models_collapsed = False
         self._last_lang = ""
 
@@ -148,7 +147,6 @@ class ScenePanel(RmlPanel):
         if body:
             body.add_event_listener("keydown", self._on_keydown)
             body.add_event_listener("click", self._on_body_click)
-            body.add_event_listener("mousemove", self._on_body_mousemove)
 
     def on_scene_changed(self, doc):
         self._rebuild_tree()
@@ -414,12 +412,6 @@ class ScenePanel(RmlPanel):
     def _on_body_click(self, event):
         self._hide_context_menu()
 
-    def _on_body_mousemove(self, event):
-        target = event.target()
-        row = self._find_row_from_target(target) if target is not None else None
-        hovered_node = row.get_attribute("data-node", "") if row else None
-        self._set_hovered_node(hovered_node or None)
-
     def _on_filter_change(self, event):
         if self.filter_input:
             self._filter_text = self.filter_input.get_attribute("value") or ""
@@ -469,7 +461,6 @@ class ScenePanel(RmlPanel):
         self._committed_node_order = self._visible_node_order
 
         self._setup_rename_input()
-        self._update_hover_display()
         self._do_scroll()
 
     def _build_node_html(self, scene, node, depth):
@@ -631,32 +622,6 @@ class ScenePanel(RmlPanel):
         for row in rows:
             name = row.get_attribute("data-node")
             row.set_class("selected", name in self._selected_nodes)
-
-    def _set_hovered_node(self, node_name):
-        if node_name == self._hovered_node:
-            return
-        previous = self._hovered_node
-        self._hovered_node = node_name
-
-        if not self.container:
-            return
-
-        if previous:
-            old_row = self.container.query_selector(f'[data-node="{previous}"]')
-            if old_row:
-                old_row.set_class("hovered", False)
-
-        if node_name:
-            new_row = self.container.query_selector(f'[data-node="{node_name}"]')
-            if new_row:
-                new_row.set_class("hovered", True)
-
-    def _update_hover_display(self):
-        if not self.container:
-            return
-        rows = self.container.query_selector_all(".tree-row")
-        for row in rows:
-            row.set_class("hovered", row.get_attribute("data-node") == self._hovered_node)
 
     def _do_scroll(self):
         if not self._scroll_to_node or not self.container:

@@ -199,10 +199,8 @@ namespace lfs::vis::gui {
             ".tree-row.even {{ background-color: {5}; }}\n"
             ".tree-row.odd {{ background-color: {6}; }}\n"
             ".tree-row:hover {{ background-color: {7}; border-left-color: {8}; }}\n"
-            ".tree-row.hovered {{ background-color: {7}; border-left-color: {8}; }}\n"
             ".tree-row.selected {{ background-color: {9}; }}\n"
             ".tree-row.selected:hover {{ background-color: {10}; border-left-color: {11}; }}\n"
-            ".tree-row.selected.hovered {{ background-color: {10}; border-left-color: {11}; }}\n"
             ".tree-row.drop-target {{ border-width: 1dp; border-color: {3}; }}\n"
             ".expand-toggle {{ color: {1}; }}\n"
             ".expand-toggle:hover {{ color: {0}; }}\n"
@@ -461,6 +459,8 @@ namespace lfs::vis::gui {
         if (hovered != last_hovered_) {
             last_hovered_ = hovered;
             had_input = true;
+            if (!hovered)
+                rml_context_->ProcessMouseLeave();
         }
 
         const int rml_mx = static_cast<int>(local_x);

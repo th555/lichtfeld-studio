@@ -61,8 +61,7 @@ body {
     cursor: pointer;
 }
 
-.tree-row:hover,
-.tree-row.hovered {
+.tree-row:hover {
     background-color: rgba(137, 180, 250, 28);
     border-left-color: rgba(137, 180, 250, 255);
 }
@@ -80,8 +79,7 @@ body {
     background-color: #5572a3;
 }
 
-.tree-row.selected:hover,
-.tree-row.selected.hovered {
+.tree-row.selected:hover {
     background-color: #6483b7;
     border-left-color: rgba(180, 208, 251, 255);
 }
