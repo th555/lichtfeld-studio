@@ -608,6 +608,8 @@ class TrainingPanel(RmlPanel):
         state = AppState.trainer_state.value
         if state != self._last_state:
             self._last_state = state
+            if state == "ready":
+                _rate_tracker.clear()
             self._sync_text_bufs()
             self._handle.dirty_all()
             changed = True
@@ -643,13 +645,12 @@ class TrainingPanel(RmlPanel):
     def _update_progress(self, doc):
         it = AppState.iteration.value
         mx = AppState.max_iterations.value
-        if mx > 0 and it > 0:
-            frac = it / mx
-            if frac != self._last_progress_frac:
-                self._last_progress_frac = frac
-                prog = doc.get_element_by_id("training-progress")
-                if prog:
-                    prog.set_attribute("value", str(frac))
+        frac = it / mx if mx > 0 and it > 0 else 0.0
+        if frac != self._last_progress_frac:
+            self._last_progress_frac = frac
+            prog = doc.get_element_by_id("training-progress")
+            if prog:
+                prog.set_attribute("value", str(frac))
 
     def _update_save_steps(self, doc):
         params = lf.optimization_params()
@@ -696,6 +697,12 @@ class TrainingPanel(RmlPanel):
             return
         loss_data = lf.loss_buffer()
         if not loss_data:
+            lf.push_loss_to_element(self._loss_graph_el, [])
+            if self._loss_label_el:
+                self._loss_label_el.set_inner_rml("")
+            for el in self._tick_els:
+                if el:
+                    el.set_inner_rml("")
             return
         data_min, data_max = lf.push_loss_to_element(self._loss_graph_el, loss_data)
         if self._loss_label_el:
