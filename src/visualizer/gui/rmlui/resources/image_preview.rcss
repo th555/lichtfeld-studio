@@ -44,7 +44,6 @@
     opacity: 0.5;
     position: relative;
     overflow: hidden;
-    transition: opacity 0.15s quadratic-out, border-color 0.15s quadratic-out;
 }
 
 .thumb-item:hover {

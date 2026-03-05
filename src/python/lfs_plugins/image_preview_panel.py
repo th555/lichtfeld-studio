@@ -11,6 +11,7 @@ from .types import RmlPanel
 
 ZOOM_MIN = 0.1
 ZOOM_MAX = 10.0
+PRECISE_SCROLL_STEP = 32.0
 
 # RmlUI key identifiers (Rml::Input::KeyIdentifier)
 KI_SPACE = 1
@@ -104,6 +105,11 @@ class ImagePreviewPanel(RmlPanel):
         if cb_mask:
             cb_mask.add_event_listener("change", self._on_mask_checkbox_change)
 
+        for eid in ("filmstrip", "sidebar"):
+            el = doc.get_element_by_id(eid)
+            if el:
+                el.add_event_listener("mousescroll", self._on_precise_scroll)
+
         wf = doc.get_element_by_id("window-frame")
 
         doc.add_event_listener("keydown", self._on_keydown)
@@ -132,16 +138,23 @@ class ImagePreviewPanel(RmlPanel):
         self._filmstrip_needs_rebuild = True
         self._prev_index = -1
 
+    def _refresh_immediately(self):
+        if self._doc:
+            self._dirty = False
+            self._refresh_ui(self._doc)
+        else:
+            self._dirty = True
+
     def _navigate(self, delta: int):
         new_idx = self._current_index + delta
         if 0 <= new_idx < len(self._image_paths):
             self._current_index = new_idx
-            self._dirty = True
+            self._refresh_immediately()
 
     def _go_to_image(self, index: int):
         if 0 <= index < len(self._image_paths):
             self._current_index = index
-            self._dirty = True
+            self._refresh_immediately()
 
     def _toggle_fit(self):
         self._fit_to_window = not self._fit_to_window
@@ -212,6 +225,27 @@ class ImagePreviewPanel(RmlPanel):
         if cb:
             self._show_overlay = cb.has_attribute("checked")
             self._dirty = True
+
+    def _on_precise_scroll(self, event):
+        scroll_el = event.current_target()
+        if not scroll_el:
+            return
+
+        try:
+            wheel_delta = float(event.get_parameter("wheel_delta_y", "0"))
+        except (TypeError, ValueError):
+            return
+
+        max_scroll = max(0.0, scroll_el.scroll_height - scroll_el.client_height)
+        if max_scroll <= 0.0:
+            event.stop_propagation()
+            return
+
+        new_scroll = min(max(scroll_el.scroll_top + wheel_delta * PRECISE_SCROLL_STEP, 0.0), max_scroll)
+        if abs(new_scroll - scroll_el.scroll_top) > 0.01:
+            scroll_el.scroll_top = new_scroll
+
+        event.stop_propagation()
 
     def _apply_zoom(self, img_el, path: Path):
         if self._fit_to_window:
@@ -398,9 +432,10 @@ class ImagePreviewPanel(RmlPanel):
 
         cb_fit = doc.get_element_by_id("cb-fit")
         if cb_fit:
-            if self._fit_to_window:
+            is_checked = cb_fit.has_attribute("checked")
+            if self._fit_to_window and not is_checked:
                 cb_fit.set_attribute("checked", "")
-            else:
+            elif not self._fit_to_window and is_checked:
                 cb_fit.remove_attribute("checked")
         _set_text(doc, "cb-fit-label", tr("image_preview.fit_to_window"))
 
@@ -415,9 +450,10 @@ class ImagePreviewPanel(RmlPanel):
             _set_text(doc, "sidebar-mask-name", name)
             cb_mask = doc.get_element_by_id("cb-mask")
             if cb_mask:
-                if self._show_overlay:
+                is_checked = cb_mask.has_attribute("checked")
+                if self._show_overlay and not is_checked:
                     cb_mask.set_attribute("checked", "")
-                else:
+                elif not self._show_overlay and is_checked:
                     cb_mask.remove_attribute("checked")
             _set_text(doc, "cb-mask-label", tr("image_preview.show_mask_overlay"))
         else:
