@@ -47,6 +47,9 @@ namespace lfs::vis::gui {
 
     void RmlImModePanelAdapter::drawLayout() {
         const auto& ops = lfs::python::get_rml_panel_host_ops();
+        if (ops.ensure_document && !ops.ensure_document(host_))
+            return;
+
         auto* doc = static_cast<Rml::ElementDocument*>(ops.get_document(host_));
         if (!doc)
             return;
@@ -92,6 +95,32 @@ namespace lfs::vis::gui {
         drawLayout();
 
         ops.draw(host_, &ctx);
+    }
+
+    void RmlImModePanelAdapter::preloadDirect(float w, float h, const PanelDrawContext& ctx,
+                                              float clip_y_min, float clip_y_max,
+                                              const PanelInputState* input) {
+        ensureHost();
+        if (!host_)
+            return;
+
+        const auto& ops = lfs::python::get_rml_panel_host_ops();
+        if (!ops.prepare_direct)
+            return;
+
+        if (ops.set_input_clip_y)
+            ops.set_input_clip_y(host_, clip_y_min, clip_y_max);
+        if (ops.set_input)
+            ops.set_input(host_, input);
+
+        const lfs::python::SceneContextGuard scene_guard(ctx.scene);
+        drawLayout();
+        ops.prepare_direct(host_, w, h);
+
+        if (ops.set_input)
+            ops.set_input(host_, nullptr);
+        if (ops.set_input_clip_y)
+            ops.set_input_clip_y(host_, -1.0f, -1.0f);
     }
 
     void RmlImModePanelAdapter::drawDirect(float x, float y, float w, float h,

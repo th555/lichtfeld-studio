@@ -13,6 +13,120 @@
 
 namespace lfs::vis::gui {
 
+    bool RmlPythonPanelAdapter::ensureHost() {
+        if (host_)
+            return true;
+
+        const auto& ops = lfs::python::get_rml_panel_host_ops();
+        assert(ops.create);
+
+        host_ = ops.create(manager_, context_name_.c_str(), rml_path_.c_str());
+        if (!host_)
+            return false;
+
+        if (height_mode_ != 0 && ops.set_height_mode)
+            ops.set_height_mode(host_, height_mode_);
+        if (foreground_ && ops.set_foreground)
+            ops.set_foreground(host_, true);
+        return true;
+    }
+
+    void RmlPythonPanelAdapter::cachePythonCapabilities() {
+        if (!draw_imgui_checked_) {
+            has_draw_imgui_ = nb::hasattr(panel_instance_, "draw_imgui");
+            draw_imgui_checked_ = true;
+        }
+        if (!bind_model_checked_) {
+            has_bind_model_ = nb::hasattr(panel_instance_, "on_bind_model");
+            bind_model_checked_ = true;
+        }
+    }
+
+    void RmlPythonPanelAdapter::bindModelIfNeeded() {
+        if (model_bound_)
+            return;
+
+        const auto& ops = lfs::python::get_rml_panel_host_ops();
+        if (!ops.ensure_context || !ops.get_context || !lfs::python::can_acquire_gil())
+            return;
+
+        const lfs::python::GilAcquire gil;
+        cachePythonCapabilities();
+        if (!has_bind_model_) {
+            model_bound_ = true;
+            return;
+        }
+
+        if (!ops.ensure_context(host_))
+            return;
+
+        auto* rml_ctx = static_cast<Rml::Context*>(ops.get_context(host_));
+        assert(rml_ctx);
+        try {
+            auto py_ctx = lfs::python::PyRmlContext(rml_ctx);
+            panel_instance_.attr("on_bind_model")(py_ctx);
+            model_bound_ = true;
+        } catch (const std::exception& e) {
+            LOG_ERROR("RmlPanel on_bind_model error: {}", e.what());
+        }
+    }
+
+    Rml::ElementDocument* RmlPythonPanelAdapter::prepareForRender(const PanelDrawContext* ctx) {
+        if (!ensureHost())
+            return nullptr;
+
+        bindModelIfNeeded();
+
+        const auto& ops = lfs::python::get_rml_panel_host_ops();
+        if (ops.ensure_document) {
+            if (!ops.ensure_document(host_))
+                return nullptr;
+        }
+
+        auto* doc = static_cast<Rml::ElementDocument*>(ops.get_document(host_));
+        if (!doc || !lfs::python::can_acquire_gil())
+            return doc;
+
+        const lfs::python::GilAcquire gil;
+        cachePythonCapabilities();
+
+        bool pending_dirty = content_dirty_;
+        auto py_doc = lfs::python::PyRmlDocument(doc);
+
+        if (!loaded_) {
+            lfs::python::RmlDocumentRegistry::instance().register_document(context_name_, doc);
+            try {
+                panel_instance_.attr("on_load")(py_doc);
+                pending_dirty = true;
+            } catch (const std::exception& e) {
+                LOG_ERROR("RmlPanel on_load error: {}", e.what());
+            }
+            loaded_ = true;
+        }
+
+        if (ctx && ctx->scene && ctx->scene_generation != last_scene_gen_) {
+            try {
+                panel_instance_.attr("on_scene_changed")(py_doc);
+                pending_dirty = true;
+            } catch (const std::exception& e) {
+                LOG_ERROR("RmlPanel on_scene_changed error: {}", e.what());
+            }
+            last_scene_gen_ = ctx->scene_generation;
+        }
+
+        try {
+            nb::object result = panel_instance_.attr("on_update")(py_doc);
+            pending_dirty |= !result.is_none() && nb::cast<bool>(result);
+        } catch (const std::exception& e) {
+            LOG_ERROR("RmlPanel on_update error: {}", e.what());
+        }
+
+        if (pending_dirty && ops.mark_content_dirty)
+            ops.mark_content_dirty(host_);
+        content_dirty_ = false;
+        return doc;
+    }
+
     RmlPythonPanelAdapter::RmlPythonPanelAdapter(void* manager, nb::object panel_instance,
                                                  const std::string& context_name,
                                                  const std::string& rml_path,
@@ -52,91 +166,10 @@ namespace lfs::vis::gui {
         const auto& ops = lfs::python::get_rml_panel_host_ops();
         assert(ops.create && ops.draw && ops.get_document && ops.is_loaded);
 
-        if (!host_) {
-            host_ = ops.create(manager_, context_name_.c_str(), rml_path_.c_str());
-            if (!host_)
-                return;
-
-            if (height_mode_ != 0 && ops.set_height_mode)
-                ops.set_height_mode(host_, height_mode_);
-            if (foreground_ && ops.set_foreground)
-                ops.set_foreground(host_, true);
-        }
-
-        if (!model_bound_ && ops.ensure_context && ops.get_context && lfs::python::can_acquire_gil()) {
-            const lfs::python::GilAcquire gil;
-            has_bind_model_ = nb::hasattr(panel_instance_, "on_bind_model");
-            if (!draw_imgui_checked_) {
-                has_draw_imgui_ = nb::hasattr(panel_instance_, "draw_imgui");
-                draw_imgui_checked_ = true;
-            }
-
-            if (has_bind_model_) {
-                if (ops.ensure_context(host_)) {
-                    auto* rml_ctx = static_cast<Rml::Context*>(ops.get_context(host_));
-                    assert(rml_ctx);
-                    try {
-                        auto py_ctx = lfs::python::PyRmlContext(rml_ctx);
-                        panel_instance_.attr("on_bind_model")(py_ctx);
-                    } catch (const std::exception& e) {
-                        LOG_ERROR("RmlPanel on_bind_model error: {}", e.what());
-                    }
-                }
-            }
-            model_bound_ = true;
-        }
-
-        if (content_dirty_ && ops.mark_content_dirty)
-            ops.mark_content_dirty(host_);
+        if (!prepareForRender(&ctx))
+            return;
 
         ops.draw(host_, &ctx);
-
-        auto* doc = static_cast<Rml::ElementDocument*>(ops.get_document(host_));
-        if (!doc)
-            return;
-
-        if (!lfs::python::can_acquire_gil())
-            return;
-
-        const lfs::python::GilAcquire gil;
-
-        if (!loaded_) {
-            lfs::python::RmlDocumentRegistry::instance().register_document(
-                context_name_, doc);
-
-            if (!draw_imgui_checked_) {
-                has_draw_imgui_ = nb::hasattr(panel_instance_, "draw_imgui");
-                draw_imgui_checked_ = true;
-            }
-
-            try {
-                auto py_doc = lfs::python::PyRmlDocument(doc);
-                panel_instance_.attr("on_load")(py_doc);
-            } catch (const std::exception& e) {
-                LOG_ERROR("RmlPanel on_load error: {}", e.what());
-            }
-            loaded_ = true;
-        }
-
-        try {
-            auto py_doc = lfs::python::PyRmlDocument(doc);
-            nb::object result = panel_instance_.attr("on_update")(py_doc);
-            content_dirty_ = !result.is_none() && nb::cast<bool>(result);
-        } catch (const std::exception& e) {
-            LOG_ERROR("RmlPanel on_update error: {}", e.what());
-        }
-
-        if (ctx.scene && ctx.scene_generation != last_scene_gen_) {
-            try {
-                auto py_doc = lfs::python::PyRmlDocument(doc);
-                panel_instance_.attr("on_scene_changed")(py_doc);
-            } catch (const std::exception& e) {
-                LOG_ERROR("RmlPanel on_scene_changed error: {}", e.what());
-            }
-            last_scene_gen_ = ctx.scene_generation;
-            if (ops.mark_content_dirty)
-                ops.mark_content_dirty(host_);
-        }
 
         if (has_draw_imgui_) {
             try {
@@ -153,85 +186,39 @@ namespace lfs::vis::gui {
         const auto& ops = lfs::python::get_rml_panel_host_ops();
         assert(ops.create && ops.draw_direct && ops.get_document && ops.is_loaded);
 
-        if (!host_) {
-            host_ = ops.create(manager_, context_name_.c_str(), rml_path_.c_str());
-            if (!host_)
-                return;
-            if (height_mode_ != 0 && ops.set_height_mode)
-                ops.set_height_mode(host_, height_mode_);
-            if (foreground_ && ops.set_foreground)
-                ops.set_foreground(host_, true);
-        }
-
-        if (!model_bound_ && ops.ensure_context && ops.get_context && lfs::python::can_acquire_gil()) {
-            const lfs::python::GilAcquire gil;
-            has_bind_model_ = nb::hasattr(panel_instance_, "on_bind_model");
-            if (!draw_imgui_checked_) {
-                has_draw_imgui_ = nb::hasattr(panel_instance_, "draw_imgui");
-                draw_imgui_checked_ = true;
-            }
-            if (has_bind_model_) {
-                if (ops.ensure_context(host_)) {
-                    auto* rml_ctx = static_cast<Rml::Context*>(ops.get_context(host_));
-                    assert(rml_ctx);
-                    try {
-                        auto py_ctx = lfs::python::PyRmlContext(rml_ctx);
-                        panel_instance_.attr("on_bind_model")(py_ctx);
-                    } catch (const std::exception& e) {
-                        LOG_ERROR("RmlPanel on_bind_model error: {}", e.what());
-                    }
-                }
-            }
-            model_bound_ = true;
-        }
-
-        if (content_dirty_ && ops.mark_content_dirty)
-            ops.mark_content_dirty(host_);
+        if (!prepareForRender(&ctx))
+            return;
 
         ops.draw_direct(host_, x, y, w, h);
+    }
 
-        auto* doc = static_cast<Rml::ElementDocument*>(ops.get_document(host_));
-        if (!doc)
+    void RmlPythonPanelAdapter::preload(const PanelDrawContext& ctx) {
+        if (loaded_)
             return;
-        if (!lfs::python::can_acquire_gil())
+        prepareForRender(&ctx);
+    }
+
+    void RmlPythonPanelAdapter::preloadDirect(float w, float h, const PanelDrawContext& ctx,
+                                              float clip_y_min, float clip_y_max,
+                                              const PanelInputState* input) {
+        if (!prepareForRender(&ctx))
             return;
 
-        const lfs::python::GilAcquire gil;
+        const auto& ops = lfs::python::get_rml_panel_host_ops();
+        if (!ops.prepare_direct)
+            return;
 
-        if (!loaded_) {
-            lfs::python::RmlDocumentRegistry::instance().register_document(context_name_, doc);
-            if (!draw_imgui_checked_) {
-                has_draw_imgui_ = nb::hasattr(panel_instance_, "draw_imgui");
-                draw_imgui_checked_ = true;
-            }
-            try {
-                auto py_doc = lfs::python::PyRmlDocument(doc);
-                panel_instance_.attr("on_load")(py_doc);
-            } catch (const std::exception& e) {
-                LOG_ERROR("RmlPanel on_load error: {}", e.what());
-            }
-            loaded_ = true;
-        }
+        if (ops.set_input_clip_y)
+            ops.set_input_clip_y(host_, clip_y_min, clip_y_max);
+        if (ops.set_input)
+            ops.set_input(host_, input);
 
-        try {
-            auto py_doc = lfs::python::PyRmlDocument(doc);
-            nb::object result = panel_instance_.attr("on_update")(py_doc);
-            content_dirty_ = !result.is_none() && nb::cast<bool>(result);
-        } catch (const std::exception& e) {
-            LOG_ERROR("RmlPanel on_update error: {}", e.what());
-        }
+        ops.prepare_direct(host_, w, h);
 
-        if (ctx.scene && ctx.scene_generation != last_scene_gen_) {
-            try {
-                auto py_doc = lfs::python::PyRmlDocument(doc);
-                panel_instance_.attr("on_scene_changed")(py_doc);
-            } catch (const std::exception& e) {
-                LOG_ERROR("RmlPanel on_scene_changed error: {}", e.what());
-            }
-            last_scene_gen_ = ctx.scene_generation;
-            if (ops.mark_content_dirty)
-                ops.mark_content_dirty(host_);
-        }
+        if (ops.set_input)
+            ops.set_input(host_, nullptr);
+        if (ops.set_input_clip_y)
+            ops.set_input_clip_y(host_, -1.0f, -1.0f);
     }
 
     float RmlPythonPanelAdapter::getDirectDrawHeight() const {

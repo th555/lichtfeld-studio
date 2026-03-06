@@ -21,9 +21,10 @@
 #include <RmlUi/Core/Input.h>
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_scancode.h>
+#include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cmath>
-#include <cstring>
 #include <filesystem>
 #include <format>
 
@@ -250,10 +251,12 @@ namespace lfs::vis::gui {
         if (!document_)
             return false;
 
-        const auto& p = lfs::vis::theme().palette;
-        if (std::memcmp(last_synced_text_, &p.text, sizeof(last_synced_text_)) == 0)
+        const std::size_t theme_signature = rml_theme::currentThemeSignature();
+        if (has_theme_signature_ && last_theme_signature_ == theme_signature)
             return false;
-        std::memcpy(last_synced_text_, &p.text, sizeof(last_synced_text_));
+
+        last_theme_signature_ = theme_signature;
+        has_theme_signature_ = true;
 
         if (base_rcss_.empty()) {
             auto rcss_name = std::filesystem::path(rml_path_).replace_extension(".rcss").string();
@@ -272,6 +275,10 @@ namespace lfs::vis::gui {
         return rml_context_ != nullptr;
     }
 
+    bool RmlPanelHost::ensureDocumentLoaded() {
+        return ensureContext() && loadDocument();
+    }
+
     bool RmlPanelHost::loadDocument() {
         if (document_)
             return true;
@@ -279,8 +286,10 @@ namespace lfs::vis::gui {
             const auto full_path = lfs::vis::getAssetPath(rml_path_);
             document_ = rml_context_->LoadDocument(full_path.string());
             if (document_) {
+                syncThemeProperties();
                 document_->Show();
                 cacheContentElements();
+                render_needed_ = true;
             } else {
                 LOG_ERROR("RmlUI: failed to load {}", rml_path_);
             }
@@ -336,16 +345,35 @@ namespace lfs::vis::gui {
 
             const float saved_scroll = scroll_el_ ? scroll_el_->GetScrollTop() : 0;
 
-            const int layout_h = 10000;
-            rml_context_->SetDimensions(Rml::Vector2i(pw, layout_h));
-            rml_context_->Update();
+            int layout_h = ph;
+            if (last_content_height_ > 0.0f)
+                layout_h = std::max(layout_h, static_cast<int>(std::ceil(last_content_height_)));
+            else if (last_content_el_height_ > 0.0f)
+                layout_h = std::max(layout_h, static_cast<int>(std::ceil(last_content_el_height_)));
+            else if (last_fbo_h_ > 0)
+                layout_h = std::max(layout_h, last_fbo_h_);
 
-            const float content_h = compute_content_height();
+            layout_h = std::clamp(layout_h, 1, kMaxFboSize);
+
+            float content_h = 0.0f;
+            for (int pass = 0; pass < 3; ++pass) {
+                rml_context_->SetDimensions(Rml::Vector2i(pw, layout_h));
+                rml_context_->Update();
+                content_h = compute_content_height();
+
+                const int measured = std::clamp(
+                    static_cast<int>(std::ceil(content_h)), 1, kMaxFboSize);
+                if (measured <= layout_h || layout_h == kMaxFboSize)
+                    break;
+
+                layout_h = measured;
+            }
+
             last_content_height_ = content_h;
             if (content_el_)
                 last_content_el_height_ = content_el_->GetOffsetHeight();
-            const int measured = std::min(kMaxFboSize,
-                                          std::max(1, static_cast<int>(std::ceil(content_h))));
+            const int measured = std::clamp(
+                static_cast<int>(std::ceil(content_h)), 1, kMaxFboSize);
             if (ph > 0 && ph < measured) {
                 display_h = static_cast<float>(ph);
             } else {
@@ -415,7 +443,7 @@ namespace lfs::vis::gui {
         if (avail_w <= 0 || avail_h <= 0)
             return;
 
-        if (!ensureContext() || !loadDocument())
+        if (!ensureDocumentLoaded())
             return;
 
         const int w = static_cast<int>(avail_w);
@@ -438,32 +466,61 @@ namespace lfs::vis::gui {
         fbo_.blitAsImage(avail_w, display_h);
     }
 
+    void RmlPanelHost::resolveDirectRenderHeight(float requested_h, int& ph, float& display_h) const {
+        if (height_mode_ == HeightMode::Content) {
+            const float ch = last_content_height_;
+            if (ch > 0 && requested_h < ch) {
+                ph = static_cast<int>(requested_h);
+                display_h = requested_h;
+            } else if (ch > 0) {
+                ph = std::max(1, static_cast<int>(std::ceil(ch)));
+                display_h = ch;
+            } else {
+                float initial_h = requested_h;
+                if (clip_y_min_ >= 0.0f && clip_y_max_ > clip_y_min_)
+                    initial_h = std::min(initial_h, clip_y_max_ - clip_y_min_);
+                if (input_ && input_->screen_h > 0)
+                    initial_h = std::min(initial_h, static_cast<float>(input_->screen_h));
+                if (last_fbo_h_ > 0)
+                    initial_h = std::min(initial_h, static_cast<float>(last_fbo_h_));
+                if (!std::isfinite(initial_h) || initial_h <= 0.0f)
+                    initial_h = std::min(requested_h, 1024.0f);
+
+                ph = std::clamp(static_cast<int>(std::ceil(initial_h)), 1, kMaxFboSize);
+                display_h = static_cast<float>(ph);
+            }
+        } else {
+            ph = std::min(kMaxFboSize, static_cast<int>(requested_h));
+            display_h = static_cast<float>(ph);
+        }
+    }
+
+    void RmlPanelHost::prepareDirect(float w, float h) {
+        if (w <= 0 || h <= 0)
+            return;
+
+        if (!ensureDocumentLoaded())
+            return;
+
+        const int pw = static_cast<int>(w);
+        int ph = 0;
+        float display_h = 0.0f;
+        resolveDirectRenderHeight(h, ph, display_h);
+
+        renderIfDirty(pw, ph, display_h);
+    }
+
     void RmlPanelHost::drawDirect(float x, float y, float w, float h) {
         if (w <= 0 || h <= 0)
             return;
 
-        if (!ensureContext() || !loadDocument())
+        if (!ensureDocumentLoaded())
             return;
 
         const int pw = static_cast<int>(w);
         int ph;
         float display_h;
-        if (height_mode_ == HeightMode::Content) {
-            const float ch = last_content_height_;
-            if (ch > 0 && h < ch) {
-                ph = static_cast<int>(h);
-                display_h = h;
-            } else if (ch > 0) {
-                ph = std::max(1, static_cast<int>(std::ceil(ch)));
-                display_h = ch;
-            } else {
-                ph = std::min(kMaxFboSize, static_cast<int>(h));
-                display_h = static_cast<float>(ph);
-            }
-        } else {
-            ph = std::min(kMaxFboSize, static_cast<int>(h));
-            display_h = static_cast<float>(ph);
-        }
+        resolveDirectRenderHeight(h, ph, display_h);
 
         if (forwardInput(x, y))
             render_needed_ = true;

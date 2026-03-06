@@ -12,6 +12,10 @@
 
 namespace nb = nanobind;
 
+namespace Rml {
+    class ElementDocument;
+}
+
 namespace lfs::vis::gui {
 
     class RmlPythonPanelAdapter : public IPanel {
@@ -22,6 +26,10 @@ namespace lfs::vis::gui {
         ~RmlPythonPanelAdapter() override;
 
         void draw(const PanelDrawContext& ctx) override;
+        void preload(const PanelDrawContext& ctx) override;
+        void preloadDirect(float w, float h, const PanelDrawContext& ctx,
+                           float clip_y_min, float clip_y_max,
+                           const PanelInputState* input) override;
         bool supportsDirectDraw() const override { return true; }
         void drawDirect(float x, float y, float w, float h, const PanelDrawContext& ctx) override;
         float getDirectDrawHeight() const override;
@@ -33,6 +41,11 @@ namespace lfs::vis::gui {
         void setForeground(bool fg);
 
     private:
+        bool ensureHost();
+        void cachePythonCapabilities();
+        void bindModelIfNeeded();
+        Rml::ElementDocument* prepareForRender(const PanelDrawContext* ctx);
+
         void* host_ = nullptr;
         void* manager_;
         std::string context_name_;
@@ -41,6 +54,7 @@ namespace lfs::vis::gui {
         bool loaded_ = false;
         bool model_bound_ = false;
         bool has_bind_model_ = false;
+        bool bind_model_checked_ = false;
         bool has_draw_imgui_ = false;
         bool draw_imgui_checked_ = false;
         int height_mode_ = 0;

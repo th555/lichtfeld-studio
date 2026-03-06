@@ -270,7 +270,7 @@ namespace lfs::python {
         info.initial_height = initial_height;
 
         gui::PanelRegistry::instance().register_panel(std::move(info));
-        rml_adapters_[idname] = std::move(adapter);
+        rml_adapters_[idname] = adapter;
 
         LOG_INFO("RmlUI panel '{}' registered", label);
     }

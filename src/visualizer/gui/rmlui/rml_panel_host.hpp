@@ -7,6 +7,7 @@
 #include "gui/panel_registry.hpp"
 #include "gui/rmlui/rml_fbo.hpp"
 #include <core/export.hpp>
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -36,7 +37,9 @@ namespace lfs::vis::gui {
         void draw(const PanelDrawContext& ctx, float avail_w, float avail_h,
                   float pos_x, float pos_y);
         void drawDirect(float x, float y, float w, float h);
+        void prepareDirect(float w, float h);
         bool ensureContext();
+        bool ensureDocumentLoaded();
 
         void setInput(const PanelInputState* input) { input_ = input; }
         bool hasInput() const { return input_ != nullptr; }
@@ -69,6 +72,7 @@ namespace lfs::vis::gui {
         std::string generateThemeRCSS() const;
         bool loadDocument();
         void cacheContentElements();
+        void resolveDirectRenderHeight(float requested_h, int& ph, float& display_h) const;
         void renderIfDirty(int pw, int ph, float& display_h);
 
         RmlUIManager* manager_;
@@ -87,7 +91,8 @@ namespace lfs::vis::gui {
         bool content_dirty_ = true;
 
         std::string base_rcss_;
-        float last_synced_text_[4]{};
+        std::size_t last_theme_signature_ = 0;
+        bool has_theme_signature_ = false;
         bool has_text_focus_ = false;
         bool wants_keyboard_ = false;
 

@@ -653,6 +653,32 @@ namespace lfs::vis::gui {
             hp->drawDirect(x, y, w, h);
             hp->setInput(nullptr);
         };
+        ops.prepare_direct = [](void* host, float w, float h) {
+            auto* hp = static_cast<RmlPanelHost*>(host);
+            PanelInputState fallback;
+            if (!hp->hasInput()) {
+                auto* mvp = ImGui::GetMainViewport();
+                const auto& fio = ImGui::GetIO();
+                fallback.mouse_x = fio.MousePos.x;
+                fallback.mouse_y = fio.MousePos.y;
+                fallback.mouse_down[0] = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                fallback.mouse_down[1] = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                fallback.mouse_clicked[0] = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                fallback.mouse_clicked[1] = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                fallback.mouse_released[0] = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+                fallback.mouse_released[1] = ImGui::IsMouseReleased(ImGuiMouseButton_Right);
+                fallback.mouse_wheel = fio.MouseWheel;
+                fallback.key_ctrl = fio.KeyCtrl;
+                fallback.key_shift = fio.KeyShift;
+                fallback.key_alt = fio.KeyAlt;
+                fallback.key_super = fio.KeySuper;
+                fallback.screen_w = static_cast<int>(mvp->Size.x);
+                fallback.screen_h = static_cast<int>(mvp->Size.y);
+                hp->setInput(&fallback);
+            }
+            hp->prepareDirect(w, h);
+            hp->setInput(nullptr);
+        };
         ops.get_document = [](void* host) -> void* {
             return static_cast<RmlPanelHost*>(host)->getDocument();
         };
@@ -668,6 +694,9 @@ namespace lfs::vis::gui {
         };
         ops.ensure_context = [](void* host) -> bool {
             return static_cast<RmlPanelHost*>(host)->ensureContext();
+        };
+        ops.ensure_document = [](void* host) -> bool {
+            return static_cast<RmlPanelHost*>(host)->ensureDocumentLoaded();
         };
         ops.get_context = [](void* host) -> void* {
             return static_cast<RmlPanelHost*>(host)->getContext();
@@ -1007,6 +1036,9 @@ namespace lfs::vis::gui {
             draw_ctx.is_training = cc->snapshot().is_running;
 
         auto& reg = PanelRegistry::instance();
+
+        reg.preload_panels(PanelSpace::SceneHeader, draw_ctx);
+        reg.preload_panels(PanelSpace::SidePanel, draw_ctx);
 
         const auto* mvp_input = ImGui::GetMainViewport();
         const auto& io = ImGui::GetIO();

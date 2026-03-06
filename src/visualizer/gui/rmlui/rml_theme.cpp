@@ -10,8 +10,10 @@
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Factory.h>
 #include <cassert>
+#include <cstddef>
 #include <format>
 #include <fstream>
+#include <functional>
 
 namespace lfs::vis::gui::rml_theme {
 
@@ -56,6 +58,23 @@ namespace lfs::vis::gui::rml_theme {
             return {base.x + (accent.x - base.x) * factor,
                     base.y + (accent.y - base.y) * factor,
                     base.z + (accent.z - base.z) * factor, 1.0f};
+        }
+
+        template <typename T>
+        void hashCombine(std::size_t& seed, const T& value) {
+            seed ^= std::hash<T>{}(value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+
+        void hashColor(std::size_t& seed, const ImVec4& color) {
+            hashCombine(seed, color.x);
+            hashCombine(seed, color.y);
+            hashCombine(seed, color.z);
+            hashCombine(seed, color.w);
+        }
+
+        void hashVec2(std::size_t& seed, const ImVec2& value) {
+            hashCombine(seed, value.x);
+            hashCombine(seed, value.y);
         }
     } // namespace
 
@@ -295,6 +314,57 @@ namespace lfs::vis::gui::rml_theme {
 
     std::string darkenColorToRml(const ImVec4& c, float amount) {
         return colorToRml({c.x - amount, c.y - amount, c.z - amount, c.w});
+    }
+
+    std::size_t currentThemeSignature() {
+        const auto& t = lfs::vis::theme();
+        const auto& p = t.palette;
+        const auto& s = t.sizes;
+        const auto& b = t.button;
+
+        std::size_t seed = 0;
+        hashCombine(seed, t.name);
+
+        hashColor(seed, p.background);
+        hashColor(seed, p.surface);
+        hashColor(seed, p.surface_bright);
+        hashColor(seed, p.primary);
+        hashColor(seed, p.primary_dim);
+        hashColor(seed, p.secondary);
+        hashColor(seed, p.text);
+        hashColor(seed, p.text_dim);
+        hashColor(seed, p.border);
+        hashColor(seed, p.success);
+        hashColor(seed, p.warning);
+        hashColor(seed, p.error);
+        hashColor(seed, p.info);
+        hashColor(seed, p.row_even);
+        hashColor(seed, p.row_odd);
+
+        hashCombine(seed, s.window_rounding);
+        hashCombine(seed, s.frame_rounding);
+        hashCombine(seed, s.popup_rounding);
+        hashCombine(seed, s.scrollbar_rounding);
+        hashCombine(seed, s.grab_rounding);
+        hashCombine(seed, s.tab_rounding);
+        hashCombine(seed, s.border_size);
+        hashCombine(seed, s.child_border_size);
+        hashCombine(seed, s.popup_border_size);
+        hashVec2(seed, s.window_padding);
+        hashVec2(seed, s.frame_padding);
+        hashVec2(seed, s.item_spacing);
+        hashVec2(seed, s.item_inner_spacing);
+        hashCombine(seed, s.indent_spacing);
+        hashCombine(seed, s.scrollbar_size);
+        hashCombine(seed, s.grab_min_size);
+        hashCombine(seed, s.toolbar_button_size);
+        hashCombine(seed, s.toolbar_padding);
+        hashCombine(seed, s.toolbar_spacing);
+
+        hashCombine(seed, b.tint_normal);
+        hashCombine(seed, b.tint_hover);
+        hashCombine(seed, b.tint_active);
+        return seed;
     }
 
     void applyTheme(Rml::ElementDocument* doc, const std::string& base_rcss,

@@ -131,6 +131,18 @@ namespace lfs::vis::gui {
                                                            content_x, y_cursor + main_h, content_w, 100000.0f, draw_ctx,
                                                            clip_y_min, clip_y_max, &input);
 
+        for (size_t attempt = 0; attempt < main_tabs.size(); ++attempt) {
+            const size_t idx = (background_preload_index_ + attempt) % main_tabs.size();
+            const auto& tab = main_tabs[idx];
+            if (tab.idname == active_tab_idname_)
+                continue;
+
+            reg.preload_single_panel_direct(tab.idname, content_w, tab_content_h, draw_ctx,
+                                            clip_y_min, clip_y_max, &input);
+            background_preload_index_ = idx + 1;
+            break;
+        }
+
         RmlFBO::popDrawListClipRect(input.bg_draw_list);
 
         tab_content_total_h_ = main_h + child_h;
