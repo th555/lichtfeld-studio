@@ -119,6 +119,7 @@ class PluginMarketplacePanel(RmlPanel):
             self._set_sort_idx,
         )
 
+        model.bind_event("do_install_url", self._on_manual_form_submit)
         model.bind_event("confirm_yes", self._on_confirm_yes)
         model.bind_event("confirm_no", self._on_confirm_no)
 
@@ -442,11 +443,12 @@ class PluginMarketplacePanel(RmlPanel):
             w.animate_section_toggle(content, self._formats_open, arrow,
                                      header_element=header)
 
-    def _on_manual_form_submit(self, ev):
+    def _on_manual_form_submit(self, ev_or_handle=None, _ev=None, _args=None):
         from .manager import PluginManager
         mgr = PluginManager.instance()
         self._install_plugin_from_url(mgr, self._manual_url, "__manual_url__")
-        ev.stop_propagation()
+        if _ev is None and ev_or_handle is not None and hasattr(ev_or_handle, "stop_propagation"):
+            ev_or_handle.stop_propagation()
 
     def _on_manual_form_change(self, ev):
         target = ev.target()
