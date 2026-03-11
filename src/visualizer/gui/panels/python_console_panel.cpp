@@ -34,6 +34,77 @@ namespace {
     std::once_flag g_console_init_once;
     std::once_flag g_syspath_init_once;
 
+    bool should_block_editor_input(const lfs::vis::editor::PythonEditor* editor,
+                                   lfs::vis::gui::panels::PythonConsoleState& state) {
+        bool block_editor_input = false;
+
+        if (const auto* terminal = state.getTerminal()) {
+            block_editor_input |= terminal->isFocused();
+        }
+
+        // Ignore the editor's own capture state; only external text widgets should lock it out.
+        if (!editor || !editor->isFocused()) {
+            block_editor_input |= lfs::vis::gui::guiFocusState().want_text_input;
+        }
+
+        return block_editor_input;
+    }
+
+    void format_editor_script(lfs::vis::gui::panels::PythonConsoleState& state) {
+        auto* editor = state.getEditor();
+        if (!editor) {
+            return;
+        }
+
+        const std::string original = editor->getText();
+        const auto result = lfs::python::format_python_code(original);
+        if (!result.success) {
+            if (!result.error.empty()) {
+                state.addError("[Format] " + result.error);
+            }
+            return;
+        }
+
+        if (result.code != original) {
+            editor->setText(result.code);
+            state.setModified(true);
+        }
+
+        editor->focus();
+    }
+
+    void draw_vim_mode_button(lfs::vis::gui::panels::PythonConsoleState& state,
+                              const lfs::vis::Theme& t) {
+        auto* editor = state.getEditor();
+        const bool enabled = editor && editor->isVimModeEnabled();
+
+        if (enabled) {
+            ImGui::PushStyleColor(ImGuiCol_Button, t.button_selected());
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, t.button_selected_hovered());
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                  lfs::vis::darken(t.button_selected_hovered(), 0.05f));
+        }
+        if (!editor) {
+            ImGui::BeginDisabled();
+        }
+
+        if (ImGui::Button("Vim") && editor) {
+            editor->setVimModeEnabled(!enabled);
+            editor->focus();
+        }
+
+        if (!editor) {
+            ImGui::EndDisabled();
+        }
+        if (enabled) {
+            ImGui::PopStyleColor(3);
+        }
+
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip(enabled ? "Disable Vim mode" : "Enable Vim mode");
+        }
+    }
+
     void setup_sys_path() {
         std::call_once(g_syspath_init_once, [] {
             const lfs::python::GilAcquire gil;
@@ -435,6 +506,9 @@ namespace lfs::vis::gui::panels {
                 if (ImGui::MenuItem("Clear Output", "Ctrl+L")) {
                     state.clear();
                 }
+                if (ImGui::MenuItem("Format Script", "Ctrl+Shift+F")) {
+                    format_editor_script(state);
+                }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Copy Selection")) {
                     if (auto* output = state.getOutputTerminal()) {
@@ -462,7 +536,6 @@ namespace lfs::vis::gui::panels {
             }
             if (ImGui::BeginMenu("Help")) {
                 ImGui::MenuItem("Ctrl+Enter to execute", nullptr, false, false);
-                ImGui::MenuItem("Ctrl+Space for autocomplete", nullptr, false, false);
                 ImGui::MenuItem("F5 to run script", nullptr, false, false);
                 ImGui::MenuItem("Ctrl+R to reset state", nullptr, false, false);
                 ImGui::EndMenu();
@@ -546,6 +619,9 @@ namespace lfs::vis::gui::panels {
             }
 
             ImGui::SameLine();
+            draw_vim_mode_button(state, t);
+
+            ImGui::SameLine();
             ImGui::Separator();
             ImGui::SameLine();
 
@@ -568,6 +644,7 @@ namespace lfs::vis::gui::panels {
 
         float top_height = total_height * g_splitter_ratio - SPLITTER_THICKNESS / 2;
         float bottom_height = total_height * (1.0f - g_splitter_ratio) - SPLITTER_THICKNESS / 2;
+        bool editor_has_active_completion = false;
 
         top_height = std::max(top_height, MIN_PANE_HEIGHT);
         bottom_height = std::max(bottom_height, MIN_PANE_HEIGHT);
@@ -586,18 +663,16 @@ namespace lfs::vis::gui::panels {
                 ImGui::PushFont(ctx.fonts.monospace);
             }
 
-            // Block editor input when terminal has focus or other widget wants text input
-            bool block_editor_input = lfs::vis::gui::guiFocusState().want_text_input;
-            if (auto* terminal = state.getTerminal()) {
-                block_editor_input |= terminal->isFocused();
-            }
-
             if (auto* editor = state.getEditor()) {
-                editor->setReadOnly(block_editor_input);
+                editor->setReadOnly(should_block_editor_input(editor, state));
 
                 if (editor->render(editor_size)) {
                     // Ctrl+Enter was pressed - execute
                     execute_python_code(editor->getTextStripped(), state);
+                }
+                editor_has_active_completion = editor->hasActiveCompletion();
+                if (editor->consumeTextChanged()) {
+                    state.setModified(true);
                 }
             }
 
@@ -632,7 +707,10 @@ namespace lfs::vis::gui::panels {
         ImGui::PopStyleColor(3);
 
         // Bottom pane with tabs
-        ImGui::BeginChild("##bottom_pane", ImVec2(content_avail.x, bottom_height), false);
+        const ImGuiWindowFlags bottom_pane_flags =
+            editor_has_active_completion ? ImGuiWindowFlags_NoNav : ImGuiWindowFlags_None;
+        ImGui::BeginChild("##bottom_pane", ImVec2(content_avail.x, bottom_height), false,
+                          bottom_pane_flags);
         {
             const bool terminal_has_focus = state.getTerminal() && state.getTerminal()->isFocused();
             const ImGuiTabItemFlags terminal_tab_flags =
@@ -755,6 +833,9 @@ namespace lfs::vis::gui::panels {
             if (ImGui::IsKeyPressed(ImGuiKey_S, false)) {
                 save_current_script(state);
             }
+            if (ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+                format_editor_script(state);
+            }
         }
 
         ImGui::End();
@@ -842,18 +923,13 @@ namespace lfs::vis::gui::panels {
 
         // Format button
         if (ImGui::Button("Format")) {
-            if (auto* editor = state.getEditor()) {
-                const auto result = lfs::python::format_python_code(editor->getTextStripped());
-                if (result.success) {
-                    editor->setText(result.code);
-                    state.setModified(true);
-                } else if (!result.error.empty()) {
-                    state.addError("[Format] " + result.error);
-                }
-            }
+            format_editor_script(state);
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Format code (Ctrl+Shift+F)");
+
+        ImGui::SameLine();
+        draw_vim_mode_button(state, t);
 
         ImGui::SameLine();
         ImGui::TextColored(t.palette.text_dim, "|");
@@ -949,6 +1025,7 @@ namespace lfs::vis::gui::panels {
 
         float top_height = total_height * g_splitter_ratio - SPLITTER_THICKNESS / 2;
         float bottom_height = total_height * (1.0f - g_splitter_ratio) - SPLITTER_THICKNESS / 2;
+        bool editor_has_active_completion = false;
 
         top_height = std::max(top_height, MIN_PANE_HEIGHT);
         bottom_height = std::max(bottom_height, MIN_PANE_HEIGHT);
@@ -965,17 +1042,15 @@ namespace lfs::vis::gui::panels {
             const ImVec2 editor_size(ImGui::GetContentRegionAvail().x,
                                      ImGui::GetContentRegionAvail().y);
 
-            // Block editor input when terminal has focus or other widget wants text input
-            bool block_editor_input = lfs::vis::gui::guiFocusState().want_text_input;
-            if (auto* terminal = state.getTerminal()) {
-                block_editor_input |= terminal->isFocused();
-            }
-
             if (auto* editor = state.getEditor()) {
-                editor->setReadOnly(block_editor_input);
+                editor->setReadOnly(should_block_editor_input(editor, state));
 
                 if (editor->render(editor_size)) {
                     execute_python_code(editor->getTextStripped(), state);
+                }
+                editor_has_active_completion = editor->hasActiveCompletion();
+                if (editor->consumeTextChanged()) {
+                    state.setModified(true);
                 }
             }
 
@@ -1010,7 +1085,10 @@ namespace lfs::vis::gui::panels {
         ImGui::PopStyleColor(3);
 
         // Bottom pane with tabs
-        ImGui::BeginChild("##docked_bottom_pane", ImVec2(content_avail.x, bottom_height), false);
+        const ImGuiWindowFlags bottom_pane_flags =
+            editor_has_active_completion ? ImGuiWindowFlags_NoNav : ImGuiWindowFlags_None;
+        ImGui::BeginChild("##docked_bottom_pane", ImVec2(content_avail.x, bottom_height), false,
+                          bottom_pane_flags);
         {
             ImFont* const scaled_mono_bottom = ctx.fonts.monoForScale(state.getFontScale());
             const bool terminal_has_focus = state.getTerminal() && state.getTerminal()->isFocused();
@@ -1128,15 +1206,7 @@ namespace lfs::vis::gui::panels {
                 save_current_script(state);
             }
             if (ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_F, false)) {
-                if (auto* editor = state.getEditor()) {
-                    const auto result = lfs::python::format_python_code(editor->getTextStripped());
-                    if (result.success) {
-                        editor->setText(result.code);
-                        state.setModified(true);
-                    } else if (!result.error.empty()) {
-                        state.addError("[Format] " + result.error);
-                    }
-                }
+                format_editor_script(state);
             }
             // Font scaling: Ctrl++ / Ctrl+= to increase, Ctrl+- to decrease, Ctrl+0 to reset
             if (ImGui::IsKeyPressed(ImGuiKey_Equal, false) ||
