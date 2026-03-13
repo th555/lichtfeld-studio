@@ -1710,58 +1710,32 @@ namespace lfs::vis {
 
     glm::vec3 InputController::unprojectScreenPoint(double x, double y, float fallback_distance) const {
         if (!services().renderingOrNull()) {
-            const glm::vec3 forward = viewport_.camera.R * glm::vec3(0, 0, 1);
+            const glm::vec3 forward = glm::normalize(viewport_.camera.R * glm::vec3(0, 0, 1));
             return viewport_.camera.t + forward * fallback_distance;
         }
 
         const float local_x = static_cast<float>(x) - viewport_bounds_.x;
         const float local_y = static_cast<float>(y) - viewport_bounds_.y;
+        const float focal_length_mm = services().renderingOrNull()->getFocalLengthMm();
 
         const float depth = services().renderingOrNull()->getDepthAtPixel(
             static_cast<int>(local_x), static_cast<int>(local_y));
 
-        if (depth < 0.0f) {
-            const glm::vec3 forward = viewport_.camera.R * glm::vec3(0, 0, 1);
-            return viewport_.camera.t + forward * fallback_distance;
+        if (depth > 0.0f) {
+            const glm::vec3 world = viewport_.unprojectPixel(local_x, local_y, depth, focal_length_mm);
+            if (Viewport::isValidWorldPosition(world)) {
+                return world;
+            }
         }
 
-        // Use viewport dimensions for unprojection
-        const float width = viewport_bounds_.width;
-        const float height = viewport_bounds_.height;
+        const glm::vec3 fallback_world =
+            viewport_.unprojectPixel(local_x, local_y, fallback_distance, focal_length_mm);
+        if (Viewport::isValidWorldPosition(fallback_world)) {
+            return fallback_world;
+        }
 
-        // Pinhole camera unprojection matching the rasterizer
-        const float fov_y = glm::radians(services().renderingOrNull()->getFovDegrees());
-        const float aspect = width / height;
-        const float fov_x = 2.0f * std::atan(std::tan(fov_y / 2.0f) * aspect);
-
-        const float fx = width / (2.0f * std::tan(fov_x / 2.0f));
-        const float fy = height / (2.0f * std::tan(fov_y / 2.0f));
-        const float cx = width / 2.0f;
-        const float cy = height / 2.0f;
-
-        // Point in camera space (using viewport-local coordinates)
-        const glm::vec4 view_pos(
-            (local_x - cx) * depth / fx,
-            (local_y - cy) * depth / fy,
-            depth,
-            1.0f);
-
-        // Build world-to-camera matrix matching rasterizer: w2c = [R^T | -R^T*t]
-        const glm::mat3 R = viewport_.getRotationMatrix();
-        const glm::vec3 t = viewport_.getTranslation();
-        const glm::mat3 R_inv = glm::transpose(R);
-        const glm::vec3 t_inv = -R_inv * t;
-
-        glm::mat4 w2c(1.0f);
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j)
-                w2c[i][j] = R_inv[i][j];
-        w2c[3][0] = t_inv.x;
-        w2c[3][1] = t_inv.y;
-        w2c[3][2] = t_inv.z;
-
-        // Transform from camera space to world space
-        return glm::vec3(glm::inverse(w2c) * view_pos);
+        const glm::vec3 forward = glm::normalize(viewport_.camera.R * glm::vec3(0, 0, 1));
+        return viewport_.camera.t + forward * fallback_distance;
     }
 
     std::pair<glm::vec3, glm::vec3> InputController::computePickRay(double x, double y) const {
