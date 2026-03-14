@@ -126,18 +126,15 @@ namespace {
                 .play_pause = [this]() { controller.togglePlayPause(); },
                 .clear = [this]() {
                     controller.clear();
-                    sync_selected_index();
-                },
+                    sync_selected_index(); },
                 .save_path = [this](const std::string& path) { return controller.saveToJson(path); },
                 .load_path = [this](const std::string& path) {
                     const bool loaded = controller.loadFromJson(path);
                     sync_selected_index();
-                    return loaded;
-                },
+                    return loaded; },
                 .set_playback_speed = [this](const float speed) {
                     controller.setPlaybackSpeed(speed);
-                    ui_state.playback_speed = controller.playbackSpeed();
-                },
+                    ui_state.playback_speed = controller.playbackSpeed(); },
             };
         }
 

@@ -19,7 +19,7 @@ namespace lfs::python {
 namespace lfs::vis {
     class SequencerController;
     class Visualizer;
-}
+} // namespace lfs::vis
 
 namespace lfs::app {
 

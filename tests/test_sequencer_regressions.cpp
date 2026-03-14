@@ -125,24 +125,24 @@ namespace {
                 {"type", "float"},
                 {"target", "camera.exposure"},
                 {"keyframes", nlohmann::json::array({
-                    {
-                        {"time", 0.0f},
-                        {"value", 1.0f},
-                        {"easing", "linear"},
-                    },
-                })},
+                                  {
+                                      {"time", 0.0f},
+                                      {"value", 1.0f},
+                                      {"easing", "linear"},
+                                  },
+                              })},
             },
             {
                 {"id", 42u},
                 {"type", "vec3"},
                 {"target", "light.color"},
                 {"keyframes", nlohmann::json::array({
-                    {
-                        {"time", 1.0f},
-                        {"value", {0.1f, 0.2f, 0.3f}},
-                        {"easing", "ease_out"},
-                    },
-                })},
+                                  {
+                                      {"time", 1.0f},
+                                      {"value", {0.1f, 0.2f, 0.3f}},
+                                      {"easing", "ease_out"},
+                                  },
+                              })},
             },
         });
 

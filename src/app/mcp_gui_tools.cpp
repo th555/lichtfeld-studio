@@ -3715,21 +3715,21 @@ namespace lfs::app {
             SequencerToolBackend{
                 .ensure_ready =
                     [viewer_impl]() -> std::expected<void, std::string> {
-                        if (!viewer_impl)
-                            return std::unexpected("Sequencer tools require a GUI visualizer");
-                        if (!viewer_impl->getSceneManager())
-                            return std::unexpected("Scene manager not initialized");
-                        if (!viewer_impl->getGuiManager())
-                            return std::unexpected("GUI manager not initialized");
-                        return {};
-                    },
+                    if (!viewer_impl)
+                        return std::unexpected("Sequencer tools require a GUI visualizer");
+                    if (!viewer_impl->getSceneManager())
+                        return std::unexpected("Scene manager not initialized");
+                    if (!viewer_impl->getGuiManager())
+                        return std::unexpected("GUI manager not initialized");
+                    return {};
+                },
                 .controller =
                     [viewer_impl]() -> vis::SequencerController* {
-                        if (!viewer_impl)
-                            return nullptr;
-                        auto* const gui_manager = viewer_impl->getGuiManager();
-                        return gui_manager ? &gui_manager->sequencer() : nullptr;
-                    },
+                    if (!viewer_impl)
+                        return nullptr;
+                    auto* const gui_manager = viewer_impl->getGuiManager();
+                    return gui_manager ? &gui_manager->sequencer() : nullptr;
+                },
                 .is_visible = []() { return python::is_sequencer_visible(); },
                 .set_visible = [](const bool visible) { python::set_sequencer_visible(visible); },
                 .ui_state = []() { return python::get_sequencer_ui_state(); },
