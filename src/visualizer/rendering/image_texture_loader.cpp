@@ -79,12 +79,12 @@ namespace lfs::vis::image_texture {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-                const GLenum format = (formatted.channels == 1) ? GL_RED
-                                     : (formatted.channels == 4) ? GL_RGBA
-                                                                 : GL_RGB;
-                const GLenum internal = (formatted.channels == 1) ? GL_R8
-                                       : (formatted.channels == 4) ? GL_RGBA8
-                                                                   : GL_RGB8;
+                const GLenum format = (formatted.channels == 1)   ? GL_RED
+                                      : (formatted.channels == 4) ? GL_RGBA
+                                                                  : GL_RGB;
+                const GLenum internal = (formatted.channels == 1)   ? GL_R8
+                                        : (formatted.channels == 4) ? GL_RGBA8
+                                                                    : GL_RGB8;
 
                 glTexImage2D(GL_TEXTURE_2D, 0, internal, formatted.width, formatted.height, 0,
                              format, GL_UNSIGNED_BYTE, formatted.tensor.ptr<unsigned char>());
