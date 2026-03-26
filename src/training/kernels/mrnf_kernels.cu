@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/tensor/internal/tensor_generic_ops.cuh"
-#include "lfs_kernels.hpp"
+#include "mrnf_kernels.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cub/cub.cuh>
@@ -17,7 +17,7 @@
 #include <thrust/sequence.h>
 #include <thrust/sort.h>
 
-namespace lfs::training::lfs_strategy {
+namespace lfs::training::mrnf_strategy {
 
     namespace {
 
@@ -37,7 +37,7 @@ namespace lfs::training::lfs_strategy {
 
     } // namespace
 
-    __global__ void lfs_noise_injection_kernel(
+    __global__ void mrnf_noise_injection_kernel(
         float* __restrict__ means,
         const float* __restrict__ raw_opacities,
         const float* __restrict__ vis_count,
@@ -71,7 +71,7 @@ namespace lfs::training::lfs_strategy {
         }
     }
 
-    void launch_lfs_noise_injection(
+    void launch_mrnf_noise_injection(
         float* means,
         const float* raw_opacities,
         const float* vis_count,
@@ -89,12 +89,12 @@ namespace lfs::training::lfs_strategy {
         const int blocks = static_cast<int>((N + threads - 1) / threads);
         cudaStream_t s = stream ? static_cast<cudaStream_t>(stream) : nullptr;
 
-        lfs_noise_injection_kernel<<<blocks, threads, 0, s>>>(
+        mrnf_noise_injection_kernel<<<blocks, threads, 0, s>>>(
             means, raw_opacities, vis_count,
             lr_mean, noise_weight, median_scale, N, seed);
     }
 
-    __global__ void lfs_decay_kernel(
+    __global__ void mrnf_decay_kernel(
         float* __restrict__ raw_opacities,
         float* __restrict__ log_scales,
         float opacity_decay,
@@ -119,7 +119,7 @@ namespace lfs::training::lfs_strategy {
         }
     }
 
-    void launch_lfs_decay(
+    void launch_mrnf_decay(
         float* raw_opacities,
         float* log_scales,
         float opacity_decay,
@@ -135,7 +135,7 @@ namespace lfs::training::lfs_strategy {
         const int blocks = static_cast<int>((N + threads - 1) / threads);
         cudaStream_t s = stream ? static_cast<cudaStream_t>(stream) : nullptr;
 
-        lfs_decay_kernel<<<blocks, threads, 0, s>>>(
+        mrnf_decay_kernel<<<blocks, threads, 0, s>>>(
             raw_opacities, log_scales, opacity_decay, scale_decay, train_t, N);
     }
 
@@ -175,7 +175,7 @@ namespace lfs::training::lfs_strategy {
         const float* means,
         size_t N,
         float percentile,
-        LFSBounds* bounds,
+        MRNFBounds* bounds,
         void* stream) {
 
         assert(N > 0);
@@ -370,4 +370,4 @@ namespace lfs::training::lfs_strategy {
         cudaFreeAsync(d_indices_sorted, s);
     }
 
-} // namespace lfs::training::lfs_strategy
+} // namespace lfs::training::mrnf_strategy

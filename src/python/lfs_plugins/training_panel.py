@@ -44,6 +44,11 @@ class IterationRateTracker:
 
 _rate_tracker = IterationRateTracker()
 
+
+def _is_mrnf_strategy(strategy):
+    return strategy in ("mrnf", "mnrf", "lfs")
+
+
 LOCALE_KEYS = {
     "hdr_basic_params": "training.section.basic_params",
     "hdr_advanced_params": "training.section.advanced_params",
@@ -53,7 +58,7 @@ LOCALE_KEYS = {
     "hdr_losses": "training.section.losses",
     "hdr_init": "training.section.initialization",
     "hdr_adc": "training_panel.pruning_growing",
-    "hdr_lfs": "training_panel.lfs_params",
+    "hdr_mrnf": "training_panel.mrnf_params",
     "hdr_sparsity": "training_panel.sparsity",
     "hdr_save_steps": "training_panel.save_steps",
     "strategy": "training_params.strategy",
@@ -141,7 +146,7 @@ LOCALE_KEYS = {
     "bg_clear": "training_params.bg_image_clear",
     "strategy_mcmc": "training.options.strategy.mcmc",
     "strategy_adc": "training.options.strategy.adc",
-    "strategy_lfs": "training.options.strategy.lfs",
+    "strategy_mrnf": "training.options.strategy.mrnf",
     "strategy_igs_plus": "training.options.strategy.igs_plus",
     "tile_full": "training.options.tile.full",
     "tile_half": "training.options.tile.half",
@@ -162,7 +167,9 @@ LOCALE_KEYS = {
 STRATEGY_LABEL_KEYS = {
     "mcmc": "training.options.strategy.mcmc",
     "adc": "training.options.strategy.adc",
-    "lfs": "training.options.strategy.lfs",
+    "mrnf": "training.options.strategy.mrnf",
+    "mnrf": "training.options.strategy.mrnf",
+    "lfs": "training.options.strategy.mrnf",
     "igs+": "training.options.strategy.igs_plus",
 }
 
@@ -462,8 +469,8 @@ class TrainingPanel(Panel):
                          lambda: p() is not None and p().has_params() and p().use_bilateral_grid)
         model.bind_func("dep_adc",
                          lambda: p() is not None and p().has_params() and p().strategy == "adc")
-        model.bind_func("dep_lfs",
-                         lambda: p() is not None and p().has_params() and p().strategy == "lfs")
+        model.bind_func("dep_mrnf",
+                         lambda: p() is not None and p().has_params() and _is_mrnf_strategy(p().strategy))
         model.bind_func("dep_igs",
                          lambda: p() is not None and p().has_params() and p().strategy == "igs+")
         model.bind_func("dep_adc_or_igs",
@@ -1561,13 +1568,13 @@ class TrainingPanel(Panel):
             layout.table_next_column()
             layout.push_item_width(-1)
             strategy_items = [
+                tr("training.options.strategy.mrnf"),
+                tr("training.options.strategy.igs_plus"),
                 tr("training.options.strategy.mcmc"),
                 tr("training.options.strategy.adc"),
-                tr("training.options.strategy.lfs"),
-                tr("training.options.strategy.igs_plus"),
             ]
-            strategy_map = {0: "mcmc", 1: "adc", 2: "lfs", 3: "igs+"}
-            strategy_idx = {"mcmc": 0, "adc": 1, "lfs": 2, "igs+": 3}.get(params.strategy, 0)
+            strategy_map = {0: "mrnf", 1: "igs+", 2: "mcmc", 3: "adc"}
+            strategy_idx = {"mrnf": 0, "mnrf": 0, "lfs": 0, "igs+": 1, "mcmc": 2, "adc": 3}.get(params.strategy, 2)
             changed, new_idx = layout.combo("##py_strategy", strategy_idx, strategy_items)
             if changed:
                 new_strategy = strategy_map[new_idx]
@@ -2084,10 +2091,10 @@ class TrainingPanel(Panel):
                     layout.end_table()
                 layout.tree_pop()
 
-        if params.strategy == "lfs" and layout.tree_node(tr("training_panel.lfs_params") + "##py"):
+        if _is_mrnf_strategy(params.strategy) and layout.tree_node(tr("training_panel.mrnf_params") + "##py"):
             table_open = False
             try:
-                table_open = layout.begin_table("PyLFSTable", 2)
+                table_open = layout.begin_table("PyMRNFTable", 2)
                 if table_open:
                     layout.table_setup_column(tr("common.column_label"), 140.0)
                     layout.table_setup_column(tr("common.column_control"), 0.0)

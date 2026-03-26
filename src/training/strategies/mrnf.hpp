@@ -7,33 +7,33 @@
 #include "core/splat_data.hpp"
 #include "core/tensor.hpp"
 #include "istrategy.hpp"
-#include "kernels/lfs_kernels.hpp"
+#include "kernels/mrnf_kernels.hpp"
 #include "optimizer/adam_optimizer.hpp"
 #include "optimizer/scheduler.hpp"
 #include <memory>
 
-class LFSStrategyTest_EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores_Test;
-class LFSStrategyTest_GrowAndSplitResetsOptimizerStateForParents_Test;
-class LFSStrategyTest_GrowAndSplitUsesIgsPlusSplitRule_Test;
-class LFSStrategyTest_GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks_Test;
-class LFSStrategyTest_GrowAndSplitReplacementSkipsZeroWeightCandidates_Test;
-class LFSStrategyTest_GrowAndSplitReusesFreeSlotsBeforeAppending_Test;
-class LFSStrategyTest_SerializeRoundTripPreservesFreeMask_Test;
-class LFSStrategyTest_SerializeRoundTripPreservesLrScheduleState_Test;
-class LFSStrategyTest_DeserializeResizesTransientBuffersToLoadedModel_Test;
-class LFSStrategyTest_SetOptimizationParamsRecomputesDecayFromCurrentState_Test;
+class MRNFStrategyTest_EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores_Test;
+class MRNFStrategyTest_GrowAndSplitResetsOptimizerStateForParents_Test;
+class MRNFStrategyTest_GrowAndSplitUsesIgsPlusSplitRule_Test;
+class MRNFStrategyTest_GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks_Test;
+class MRNFStrategyTest_GrowAndSplitReplacementSkipsZeroWeightCandidates_Test;
+class MRNFStrategyTest_GrowAndSplitReusesFreeSlotsBeforeAppending_Test;
+class MRNFStrategyTest_SerializeRoundTripPreservesFreeMask_Test;
+class MRNFStrategyTest_SerializeRoundTripPreservesLrScheduleState_Test;
+class MRNFStrategyTest_DeserializeResizesTransientBuffersToLoadedModel_Test;
+class MRNFStrategyTest_SetOptimizationParamsRecomputesDecayFromCurrentState_Test;
 
 namespace lfs::training {
 
-    class LFS : public IStrategy {
+    class MRNF : public IStrategy {
     public:
-        LFS() = delete;
-        explicit LFS(lfs::core::SplatData& splat_data);
+        MRNF() = delete;
+        explicit MRNF(lfs::core::SplatData& splat_data);
 
-        LFS(const LFS&) = delete;
-        LFS& operator=(const LFS&) = delete;
-        LFS(LFS&&) = delete;
-        LFS& operator=(LFS&&) = delete;
+        MRNF(const MRNF&) = delete;
+        MRNF& operator=(const MRNF&) = delete;
+        MRNF(MRNF&&) = delete;
+        MRNF& operator=(MRNF&&) = delete;
 
         void initialize(const lfs::core::param::OptimizationParameters& optimParams) override;
         void pre_step(int iter, RenderOutput& render_output) override;
@@ -51,7 +51,7 @@ namespace lfs::training {
 
         void serialize(std::ostream& os) const override;
         void deserialize(std::istream& is) override;
-        const char* strategy_type() const override { return "lfs"; }
+        const char* strategy_type() const override { return "mrnf"; }
 
         void reserve_optimizer_capacity(size_t capacity) override;
         void set_optimization_params(const lfs::core::param::OptimizationParameters& params) override;
@@ -59,16 +59,16 @@ namespace lfs::training {
         void set_image_loader(lfs::io::PipelinedImageLoader* loader) override { _image_loader = loader; }
 
     private:
-        friend class ::LFSStrategyTest_EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores_Test;
-        friend class ::LFSStrategyTest_GrowAndSplitResetsOptimizerStateForParents_Test;
-        friend class ::LFSStrategyTest_GrowAndSplitUsesIgsPlusSplitRule_Test;
-        friend class ::LFSStrategyTest_GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks_Test;
-        friend class ::LFSStrategyTest_GrowAndSplitReplacementSkipsZeroWeightCandidates_Test;
-        friend class ::LFSStrategyTest_GrowAndSplitReusesFreeSlotsBeforeAppending_Test;
-        friend class ::LFSStrategyTest_SerializeRoundTripPreservesFreeMask_Test;
-        friend class ::LFSStrategyTest_SerializeRoundTripPreservesLrScheduleState_Test;
-        friend class ::LFSStrategyTest_DeserializeResizesTransientBuffersToLoadedModel_Test;
-        friend class ::LFSStrategyTest_SetOptimizationParamsRecomputesDecayFromCurrentState_Test;
+        friend class ::MRNFStrategyTest_EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores_Test;
+        friend class ::MRNFStrategyTest_GrowAndSplitResetsOptimizerStateForParents_Test;
+        friend class ::MRNFStrategyTest_GrowAndSplitUsesIgsPlusSplitRule_Test;
+        friend class ::MRNFStrategyTest_GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks_Test;
+        friend class ::MRNFStrategyTest_GrowAndSplitReplacementSkipsZeroWeightCandidates_Test;
+        friend class ::MRNFStrategyTest_GrowAndSplitReusesFreeSlotsBeforeAppending_Test;
+        friend class ::MRNFStrategyTest_SerializeRoundTripPreservesFreeMask_Test;
+        friend class ::MRNFStrategyTest_SerializeRoundTripPreservesLrScheduleState_Test;
+        friend class ::MRNFStrategyTest_DeserializeResizesTransientBuffersToLoadedModel_Test;
+        friend class ::MRNFStrategyTest_SetOptimizationParamsRecomputesDecayFromCurrentState_Test;
 
         void refine(int iter);
         void grow_and_split(int iter, int pruned_count);
@@ -108,11 +108,11 @@ namespace lfs::training {
         bool _edge_precompute_valid = false;
         lfs::core::Tensor _free_mask;
 
-        lfs_strategy::LFSBounds _bounds = {};
+        mrnf_strategy::MRNFBounds _bounds = {};
         bool _bounds_valid = false;
         int _refine_windows_since_bounds = 0;
 
-        // LFS uses independent exponential schedules for mean and scale learning rates.
+        // MRNF uses independent exponential schedules for mean and scale learning rates.
         double _mean_lr_unscaled = 0.0;
         double _scale_lr_current = 0.0;
         double _mean_lr_gamma = 1.0;

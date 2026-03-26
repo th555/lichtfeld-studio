@@ -240,7 +240,7 @@
     "value.not_set": "(not set)",
     "options.strategy.mcmc": "MCMC",
     "options.strategy.adc": "ADC",
-    "options.strategy.lfs": "LFS",
+    "options.strategy.mrnf": "MRNF",
     "options.strategy.igs_plus": "IGS+",
     "options.tile.full": "1 (Full)",
     "options.tile.half": "2 (Half)",
@@ -570,7 +570,7 @@
     "iters_per_sec": "iters/sec",
     "sparsity": "Sparsity Settings",
     "pruning_growing": "Pruning/Growing",
-    "lfs_params": "LFS Parameters",
+    "mrnf_params": "MRNF Parameters",
     "color_red_prefix": "R:",
     "color_green_prefix": "G:",
     "color_blue_prefix": "B:"

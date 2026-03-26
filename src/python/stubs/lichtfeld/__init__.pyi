@@ -1474,7 +1474,7 @@ class OptimizationParams:
         """Active optimization strategy name"""
 
     def set_strategy(self, strategy: str) -> None:
-        """Set active strategy ('mcmc', 'adc', 'lfs', or 'igs+')"""
+        """Set active strategy ('mcmc', 'adc', 'mrnf', or 'igs+')"""
 
     @property
     def headless(self) -> bool:

@@ -30,7 +30,7 @@ namespace {
         Help
     };
 
-    const std::set<std::string> VALID_STRATEGIES = {"mcmc", "adc", "lfs", "igs+"};
+    const std::set<std::string> VALID_STRATEGIES = {"mcmc", "adc", "mrnf", "mnrf", "lfs", "igs+"};
 
     // Parse log level from string
     lfs::core::LogLevel parse_log_level(const std::string& level_str) {
@@ -105,15 +105,15 @@ namespace {
             ::args::Group training_sep(parser, " ");
             ::args::Group training_group(parser, "TRAINING PARAMETERS:");
             ::args::ValueFlag<uint32_t> iterations(training_group, "iterations", "Number of iterations", {'i', "iter"});
-            ::args::ValueFlag<std::string> strategy(training_group, "strategy", "Optimization strategy: mcmc, adc, lfs, igs+", {"strategy"});
+            ::args::ValueFlag<std::string> strategy(training_group, "strategy", "Optimization strategy: mcmc, adc, mrnf, igs+ (legacy aliases: mnrf, lfs)", {"strategy"});
             ::args::ValueFlag<int> sh_degree(training_group, "sh_degree", "Max SH degree [0-3]", {"sh-degree"});
             ::args::ValueFlag<int> sh_degree_interval(training_group, "sh_degree_interval", "SH degree interval", {"sh-degree-interval"});
             ::args::ValueFlag<int> max_cap(training_group, "max_cap", "Maximum number of Gaussians", {"max-cap"});
             ::args::ValueFlag<float> min_opacity(training_group, "min_opacity", "Minimum opacity threshold", {"min-opacity"});
             ::args::ValueFlag<float> steps_scaler(training_group, "steps_scaler", "Scale training steps by factor", {"steps-scaler"});
             ::args::ValueFlag<int> tile_mode(training_group, "tile_mode", "Tile mode for memory-efficient training: 1=1 tile, 2=2 tiles, 4=4 tiles (default: 1)", {"tile-mode"});
-            ::args::Flag use_error_map(training_group, "use_error_map", "Weight LFS refine signal by per-pixel SSIM error map", {"use-error-map"});
-            ::args::Flag use_edge_map(training_group, "use_edge_map", "Weight LFS refine signal by Sobel edge map on GT images", {"use-edge-map"});
+            ::args::Flag use_error_map(training_group, "use_error_map", "Weight MRNF refine signal by per-pixel SSIM error map", {"use-error-map"});
+            ::args::Flag use_edge_map(training_group, "use_edge_map", "Weight MRNF refine signal by Sobel edge map on GT images", {"use-edge-map"});
 
             // =============================================================================
             // INITIALIZATION
@@ -429,14 +429,14 @@ namespace {
                 const auto strat = ::args::get(strategy);
                 if (VALID_STRATEGIES.find(strat) == VALID_STRATEGIES.end()) {
                     return std::unexpected(std::format(
-                        "ERROR: Invalid optimization strategy '{}'. Valid strategies are: mcmc, adc, lfs, igs+",
+                        "ERROR: Invalid optimization strategy '{}'. Valid strategies are: mcmc, adc, mrnf, igs+ (legacy aliases: mnrf, lfs)",
                         strat));
                 }
 
                 // Unlike other parameters that will be set later as overrides,
                 // strategy must be set immediately to ensure correct JSON loading
                 // in `read_optim_params_from_json()`
-                params.optimization.strategy = strat;
+                params.optimization.strategy = std::string(lfs::core::param::canonical_strategy_name(strat));
             }
 
             if (config_file) {
@@ -719,18 +719,19 @@ lfs::core::args::parse_args_and_params(int argc, const char* const argv[]) {
         }
         params->optimization = *opt_result;
 
-        if (!strategy.empty() && strategy != params->optimization.strategy) {
+        if (!strategy.empty() &&
+            !lfs::core::param::strategy_names_match(strategy, params->optimization.strategy)) {
             return std::unexpected("--strategy conflicts with config file");
         }
     } else {
         if (strategy == "adc")
             params->optimization = lfs::core::param::OptimizationParameters::adc_defaults();
-        else if (strategy == "lfs")
-            params->optimization = lfs::core::param::OptimizationParameters::lfs_defaults();
+        else if (lfs::core::param::is_mrnf_strategy(strategy))
+            params->optimization = lfs::core::param::OptimizationParameters::mrnf_defaults();
         else if (strategy == "igs+")
             params->optimization = lfs::core::param::OptimizationParameters::igs_plus_defaults();
         else
-            params->optimization = lfs::core::param::OptimizationParameters::mcmc_defaults();
+            params->optimization = lfs::core::param::OptimizationParameters::mrnf_defaults();
     }
 
     params->dataset.loading_params = lfs::core::param::LoadingParams{};

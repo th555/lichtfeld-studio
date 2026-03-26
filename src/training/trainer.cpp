@@ -33,7 +33,7 @@
 #include "strategies/mcmc.hpp"
 #include "strategies/strategy_factory.hpp"
 #include "training/kernels/grad_alpha.hpp"
-#include "training/kernels/lfs_kernels.hpp"
+#include "training/kernels/mrnf_kernels.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -1898,14 +1898,14 @@ namespace lfs::training {
             const bool use_pixel_error_densification =
                 (params_.optimization.strategy == "mcmc") ||
                 (params_.optimization.strategy == "igs+") ||
-                (params_.optimization.strategy == "lfs" &&
+                (core::param::is_mrnf_strategy(params_.optimization.strategy) &&
                  params_.optimization.use_error_map);
             const bool use_ssim_error = use_pixel_error_densification;
             DensificationType densification_type = DensificationType::None;
             if (params_.optimization.strategy == "mcmc")
                 densification_type = DensificationType::MCMC;
-            else if (params_.optimization.strategy == "lfs")
-                densification_type = DensificationType::LFS;
+            else if (core::param::is_mrnf_strategy(params_.optimization.strategy))
+                densification_type = DensificationType::MRNF;
 
             // Loop over tiles (row-major order)
             for (int tile_idx = 0; tile_idx < num_tiles; ++tile_idx) {
@@ -2248,7 +2248,7 @@ namespace lfs::training {
                         }
                     }
 
-                    if (tile_error_map.is_valid() && params_.optimization.strategy == "lfs") {
+                    if (tile_error_map.is_valid() && core::param::is_mrnf_strategy(params_.optimization.strategy)) {
                         const float map_mean = tile_error_map.mean().item();
                         if (map_mean > 1e-6f)
                             tile_error_map.div_(map_mean);

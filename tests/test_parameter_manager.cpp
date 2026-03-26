@@ -7,6 +7,17 @@
 
 namespace {
 
+    TEST(ParameterManagerTest, DefaultStrategyIsMrnf) {
+        lfs::vis::ParameterManager manager;
+        const auto load_result = manager.ensureLoaded();
+        ASSERT_TRUE(load_result.has_value()) << load_result.error();
+
+        EXPECT_EQ(manager.getActiveStrategy(), "mrnf");
+        EXPECT_EQ(manager.getActiveParams().strategy, "mrnf");
+        EXPECT_EQ(lfs::core::param::OptimizationParameters{}.strategy, "mrnf");
+        EXPECT_EQ(lfs::core::param::OptimizationParameters::mcmc_defaults().strategy, "mcmc");
+    }
+
     TEST(ParameterManagerTest, ImportTrainingParamsRestoresResolvedCheckpointState) {
         lfs::vis::ParameterManager manager;
         const auto load_result = manager.ensureLoaded();

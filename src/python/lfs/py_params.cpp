@@ -157,7 +157,7 @@ namespace lfs::python {
             // Strategy
             .string_prop(&OptimizationParameters::strategy,
                          "strategy", "Strategy", "mcmc",
-                         "Optimization strategy: mcmc, adc, lfs, or igs+")
+                         "Optimization strategy: mcmc, adc, mrnf, or igs+")
             .flags(PROP_NEEDS_RESTART)
 
             // ADC strategy parameters
@@ -186,34 +186,34 @@ namespace lfs::python {
                        "revised_opacity", "Revised Opacity", false,
                        "Use revised opacity calculation for ADC")
 
-            // LFS strategy parameters
+            // MRNF strategy parameters
             .float_prop(&OptimizationParameters::growth_grad_threshold,
                         "growth_grad_threshold", "Growth Grad Threshold", 0.003f, 0.0f, 1.0f,
-                        "Min refine weight for growth candidacy (LFS)")
+                        "Min refine weight for growth candidacy (MRNF)")
             .float_prop(&OptimizationParameters::grow_fraction,
                         "grow_fraction", "Grow Fraction", 0.07f, 0.0f, 1.0f,
-                        "Fraction of above-threshold splats to grow (LFS)")
+                        "Fraction of above-threshold splats to grow (MRNF)")
             .size_prop(&OptimizationParameters::grow_until_iter,
                        "grow_until_iter", "Grow Until Iter", 15000, 0, 100000,
-                       "Stop LFS growth after this iteration")
+                       "Stop MRNF growth after this iteration")
             .float_prop(&OptimizationParameters::opacity_decay,
                         "opacity_decay", "Opacity Decay", 0.004f, 0.0f, 0.1f,
-                        "Opacity decay rate per refine (LFS)")
+                        "Opacity decay rate per refine (MRNF)")
             .float_prop(&OptimizationParameters::scale_decay,
                         "scale_decay", "Scale Decay", 0.002f, 0.0f, 0.1f,
-                        "Scale decay rate per refine (LFS)")
+                        "Scale decay rate per refine (MRNF)")
             .float_prop(&OptimizationParameters::means_noise_weight,
                         "means_noise_weight", "Means Noise Weight", 50.0f, 0.0f, 200.0f,
-                        "Exploration noise multiplier for means updates (LFS)")
+                        "Exploration noise multiplier for means updates (MRNF)")
             .float_prop(&OptimizationParameters::bounds_percentile,
                         "bounds_percentile", "Bounds Percentile", 0.8f, 0.5f, 1.0f,
-                        "Percentile for bounds computation (LFS)")
+                        "Percentile for bounds computation (MRNF)")
             .bool_prop(&OptimizationParameters::use_error_map,
                        "use_error_map", "Error Map", true,
-                       "Weight LFS refine signal by per-pixel SSIM error map")
+                       "Weight MRNF refine signal by per-pixel SSIM error map")
             .bool_prop(&OptimizationParameters::use_edge_map,
                        "use_edge_map", "Edge Map", true,
-                       "Weight LFS refine signal by Sobel edge map on GT images")
+                       "Weight MRNF refine signal by Sobel edge map on GT images")
 
             // Flags
             .bool_prop(&OptimizationParameters::mip_filter,
@@ -1082,16 +1082,17 @@ namespace lfs::python {
             .def(
                 "set_strategy",
                 [](PyOptimizationParams& /*self*/, const std::string& strategy) {
-                    if (strategy != "mcmc" && strategy != "adc" && strategy != "lfs" && strategy != "igs+") {
-                        throw std::invalid_argument("Strategy must be 'mcmc', 'adc', 'lfs', or 'igs+'");
+                    const auto canonical_strategy = lfs::core::param::canonical_strategy_name(strategy);
+                    if (canonical_strategy.empty()) {
+                        throw std::invalid_argument("Strategy must be 'mcmc', 'adc', 'mrnf', or 'igs+'");
                     }
                     auto* pm = get_parameter_manager();
                     if (pm) {
-                        pm->modifyActiveParams([&](auto&) { pm->setActiveStrategy(strategy); });
+                        pm->modifyActiveParams([&](auto&) { pm->setActiveStrategy(canonical_strategy); });
                     }
                 },
                 nb::arg("strategy"),
-                "Set active strategy ('mcmc', 'adc', 'lfs', or 'igs+')")
+                "Set active strategy ('mcmc', 'adc', 'mrnf', or 'igs+')")
             .def_prop_ro(
                 "headless", [](PyOptimizationParams& self) { return self.params().headless; },
                 "Whether running without visualization")

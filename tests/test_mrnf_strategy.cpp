@@ -1,20 +1,20 @@
 /* SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-class LFSStrategyTest_EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores_Test;
-class LFSStrategyTest_GrowAndSplitResetsOptimizerStateForParents_Test;
-class LFSStrategyTest_GrowAndSplitUsesIgsPlusSplitRule_Test;
-class LFSStrategyTest_GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks_Test;
-class LFSStrategyTest_GrowAndSplitReplacementSkipsZeroWeightCandidates_Test;
-class LFSStrategyTest_GrowAndSplitReusesFreeSlotsBeforeAppending_Test;
-class LFSStrategyTest_SerializeRoundTripPreservesFreeMask_Test;
-class LFSStrategyTest_SerializeRoundTripPreservesLrScheduleState_Test;
-class LFSStrategyTest_DeserializeResizesTransientBuffersToLoadedModel_Test;
-class LFSStrategyTest_SetOptimizationParamsRecomputesDecayFromCurrentState_Test;
+class MRNFStrategyTest_EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores_Test;
+class MRNFStrategyTest_GrowAndSplitResetsOptimizerStateForParents_Test;
+class MRNFStrategyTest_GrowAndSplitUsesIgsPlusSplitRule_Test;
+class MRNFStrategyTest_GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks_Test;
+class MRNFStrategyTest_GrowAndSplitReplacementSkipsZeroWeightCandidates_Test;
+class MRNFStrategyTest_GrowAndSplitReusesFreeSlotsBeforeAppending_Test;
+class MRNFStrategyTest_SerializeRoundTripPreservesFreeMask_Test;
+class MRNFStrategyTest_SerializeRoundTripPreservesLrScheduleState_Test;
+class MRNFStrategyTest_DeserializeResizesTransientBuffersToLoadedModel_Test;
+class MRNFStrategyTest_SetOptimizationParamsRecomputesDecayFromCurrentState_Test;
 
 #include "core/parameters.hpp"
 #include "core/splat_data.hpp"
-#include "training/strategies/lfs.hpp"
+#include "training/strategies/mrnf.hpp"
 
 #include <cmath>
 #include <gtest/gtest.h>
@@ -26,7 +26,7 @@ using namespace lfs::training;
 
 namespace {
 
-    SplatData create_lfs_test_splat_data(const int n_gaussians = 10) {
+    SplatData create_mrnf_test_splat_data(const int n_gaussians = 10) {
         const size_t n = static_cast<size_t>(n_gaussians);
         std::vector<float> means_data(n_gaussians * 3, 0.0f);
         for (int i = 0; i < n_gaussians; ++i) {
@@ -55,9 +55,9 @@ namespace {
 
 } // namespace
 
-TEST(LFSStrategyTest, EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
     param::OptimizationParameters opt_params;
     opt_params.iterations = 10'000;
@@ -83,11 +83,11 @@ TEST(LFSStrategyTest, EdgeGuidanceFactorPrefersHigherPrecomputedEdgeScores) {
     EXPECT_GT(guidance_ptr[1], guidance_ptr[0]);
 }
 
-TEST(LFSStrategyTest, RemoveGaussiansKeepsOptimizerStateUsable) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, RemoveGaussiansKeepsOptimizerStateUsable) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 32;
@@ -116,11 +116,11 @@ TEST(LFSStrategyTest, RemoveGaussiansKeepsOptimizerStateUsable) {
     });
 }
 
-TEST(LFSStrategyTest, GrowAndSplitResetsOptimizerStateForParents) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, GrowAndSplitResetsOptimizerStateForParents) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 32;
@@ -177,11 +177,11 @@ TEST(LFSStrategyTest, GrowAndSplitResetsOptimizerStateForParents) {
     }
 }
 
-TEST(LFSStrategyTest, GrowAndSplitUsesIgsPlusSplitRule) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, GrowAndSplitUsesIgsPlusSplitRule) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 32;
@@ -232,8 +232,8 @@ TEST(LFSStrategyTest, GrowAndSplitUsesIgsPlusSplitRule) {
     EXPECT_NEAR(opacities_ptr[initial_size], std::log(0.3f / 0.7f), 1e-5f);
 }
 
-TEST(LFSStrategyTest, StepScalingAlsoScalesGrowUntilIter) {
-    auto params = param::OptimizationParameters::lfs_defaults();
+TEST(MRNFStrategyTest, StepScalingAlsoScalesGrowUntilIter) {
+    auto params = param::OptimizationParameters::mrnf_defaults();
     params.grow_until_iter = 15000;
     params.steps_scaler = 0.5f;
 
@@ -244,11 +244,11 @@ TEST(LFSStrategyTest, StepScalingAlsoScalesGrowUntilIter) {
     EXPECT_EQ(params.stop_refine, 14250u);
 }
 
-TEST(LFSStrategyTest, GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 0;
@@ -273,11 +273,11 @@ TEST(LFSStrategyTest, GrowAndSplitWithoutMaxCapExtendsBookkeepingMasks) {
     EXPECT_EQ(strategy.free_count(), 0u);
 }
 
-TEST(LFSStrategyTest, GrowAndSplitReplacementSkipsZeroWeightCandidates) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, GrowAndSplitReplacementSkipsZeroWeightCandidates) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 32;
@@ -305,11 +305,11 @@ TEST(LFSStrategyTest, GrowAndSplitReplacementSkipsZeroWeightCandidates) {
     EXPECT_EQ(strategy.active_count(), initial_size - 1);
 }
 
-TEST(LFSStrategyTest, GrowAndSplitReusesFreeSlotsBeforeAppending) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, GrowAndSplitReusesFreeSlotsBeforeAppending) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 32;
@@ -338,11 +338,11 @@ TEST(LFSStrategyTest, GrowAndSplitReusesFreeSlotsBeforeAppending) {
     EXPECT_EQ(strategy.free_count(), 1u);
 }
 
-TEST(LFSStrategyTest, SerializeRoundTripPreservesFreeMask) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, SerializeRoundTripPreservesFreeMask) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 32;
@@ -356,8 +356,8 @@ TEST(LFSStrategyTest, SerializeRoundTripPreservesFreeMask) {
     std::stringstream ss;
     strategy.serialize(ss);
 
-    auto splat_data_copy = create_lfs_test_splat_data();
-    LFS restored(splat_data_copy);
+    auto splat_data_copy = create_mrnf_test_splat_data();
+    MRNF restored(splat_data_copy);
     restored.initialize(opt_params);
     restored.deserialize(ss);
 
@@ -370,11 +370,11 @@ TEST(LFSStrategyTest, SerializeRoundTripPreservesFreeMask) {
     EXPECT_EQ(restored.free_count(), 2u);
 }
 
-TEST(LFSStrategyTest, SerializeRoundTripPreservesLrScheduleState) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, SerializeRoundTripPreservesLrScheduleState) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 32;
@@ -387,8 +387,8 @@ TEST(LFSStrategyTest, SerializeRoundTripPreservesLrScheduleState) {
     std::stringstream ss;
     strategy.serialize(ss);
 
-    auto splat_data_copy = create_lfs_test_splat_data();
-    LFS restored(splat_data_copy);
+    auto splat_data_copy = create_mrnf_test_splat_data();
+    MRNF restored(splat_data_copy);
     restored.initialize(opt_params);
     restored.deserialize(ss);
 
@@ -400,11 +400,11 @@ TEST(LFSStrategyTest, SerializeRoundTripPreservesLrScheduleState) {
                 1e-12);
 }
 
-TEST(LFSStrategyTest, DeserializeResizesTransientBuffersToLoadedModel) {
-    auto splat_data = create_lfs_test_splat_data(12);
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, DeserializeResizesTransientBuffersToLoadedModel) {
+    auto splat_data = create_mrnf_test_splat_data(12);
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 32;
@@ -415,8 +415,8 @@ TEST(LFSStrategyTest, DeserializeResizesTransientBuffersToLoadedModel) {
     strategy.serialize(ss);
     ss.seekg(0);
 
-    auto smaller_splat_data = create_lfs_test_splat_data(5);
-    LFS restored(smaller_splat_data);
+    auto smaller_splat_data = create_mrnf_test_splat_data(5);
+    MRNF restored(smaller_splat_data);
     restored.initialize(opt_params);
     smaller_splat_data.deserialize(ss);
     restored.deserialize(ss);
@@ -428,11 +428,11 @@ TEST(LFSStrategyTest, DeserializeResizesTransientBuffersToLoadedModel) {
     EXPECT_FALSE(restored._edge_precompute_valid);
 }
 
-TEST(LFSStrategyTest, SetOptimizationParamsRecomputesDecayFromCurrentState) {
-    auto splat_data = create_lfs_test_splat_data();
-    LFS strategy(splat_data);
+TEST(MRNFStrategyTest, SetOptimizationParamsRecomputesDecayFromCurrentState) {
+    auto splat_data = create_mrnf_test_splat_data();
+    MRNF strategy(splat_data);
 
-    auto opt_params = param::OptimizationParameters::lfs_defaults();
+    auto opt_params = param::OptimizationParameters::mrnf_defaults();
     opt_params.iterations = 10'000;
     opt_params.sh_degree_interval = 10'000;
     opt_params.max_cap = 32;
