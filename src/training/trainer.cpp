@@ -94,6 +94,88 @@ namespace lfs::training {
             return ScopeGuard<Fn>(std::move(fn));
         }
 
+        struct PipelineMemoryEstimate {
+            size_t max_image_bytes = 0;
+            bool masks_possible = false;
+        };
+
+        [[nodiscard]] PipelineMemoryEstimate estimatePipelineMemory(
+            const std::shared_ptr<CameraDataset>& dataset) {
+            PipelineMemoryEstimate estimate;
+            if (!dataset) {
+                return estimate;
+            }
+
+            for (const auto& cam : dataset->get_cameras()) {
+                if (!cam) {
+                    continue;
+                }
+
+                const size_t width = static_cast<size_t>(std::max(cam->image_width(), 0));
+                const size_t height = static_cast<size_t>(std::max(cam->image_height(), 0));
+                if (width > 0 && height > 0) {
+                    estimate.max_image_bytes = std::max(
+                        estimate.max_image_bytes,
+                        width * height * size_t{3} * sizeof(float));
+                }
+
+                estimate.masks_possible = estimate.masks_possible || cam->has_mask() || cam->has_alpha();
+            }
+
+            return estimate;
+        }
+
+        [[nodiscard]] lfs::io::PipelinedLoaderConfig tunePipelinedLoaderConfig(
+            lfs::io::PipelinedLoaderConfig config,
+            const std::shared_ptr<CameraDataset>& dataset) {
+            const auto estimate = estimatePipelineMemory(dataset);
+            if (estimate.max_image_bytes == 0) {
+                config.decoder_pool_size = std::min(config.decoder_pool_size, config.jpeg_batch_size);
+                return config;
+            }
+
+            size_t free_bytes = 0;
+            size_t total_bytes = 0;
+            if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess || free_bytes == 0 || total_bytes == 0) {
+                config.decoder_pool_size = std::min(config.decoder_pool_size, config.jpeg_batch_size);
+                return config;
+            }
+
+            const size_t per_ready_image_bytes = estimate.max_image_bytes +
+                                                 (estimate.masks_possible ? estimate.max_image_bytes / 3 : 0);
+            constexpr size_t MIN_PIPELINE_BUDGET_BYTES = 256ULL * 1024 * 1024;
+            constexpr size_t MAX_PIPELINE_BUDGET_BYTES = 512ULL * 1024 * 1024;
+            const size_t target_pipeline_budget =
+                std::clamp(free_bytes / 32, MIN_PIPELINE_BUDGET_BYTES, MAX_PIPELINE_BUDGET_BYTES);
+
+            const size_t recommended_prefetch = std::clamp(
+                target_pipeline_budget / std::max<size_t>(per_ready_image_bytes, 1),
+                size_t{2},
+                config.prefetch_count);
+
+            if (recommended_prefetch < config.prefetch_count) {
+                LOG_INFO(
+                    "Reducing image pipeline depth {} -> {} (largest image {:.1f} MB, free VRAM {:.1f} GB)",
+                    config.prefetch_count,
+                    recommended_prefetch,
+                    estimate.max_image_bytes / (1024.0 * 1024.0),
+                    free_bytes / (1024.0 * 1024.0 * 1024.0));
+                config.prefetch_count = recommended_prefetch;
+            }
+
+            config.jpeg_batch_size = std::min(
+                config.jpeg_batch_size,
+                std::max<size_t>(1, config.prefetch_count));
+            config.output_queue_size = std::min(
+                config.output_queue_size,
+                std::max<size_t>(1, config.prefetch_count / 2));
+            config.decoder_pool_size = std::min(
+                std::max<size_t>(1, config.decoder_pool_size),
+                std::max<size_t>(1, config.jpeg_batch_size));
+
+            return config;
+        }
+
         PPISPRenderOverrides toRenderOverrides(const PPISPViewportOverrides& ov) {
             PPISPRenderOverrides r;
             r.exposure_offset = ov.exposure_offset;
@@ -1755,7 +1837,7 @@ namespace lfs::training {
                     // Final tonemapping: clamp to [0, 1] for loss computation.
                     // This is redundant when PPISP is active (CRF already clamps), but ensures
                     // valid output range for bilateral grids and raw rasterizer output.
-                    corrected_image = corrected_image.clamp(0.0f, 1.0f);
+                    corrected_image.clamp_(0.0f, 1.0f);
 
                     nvtxRangePush("compute_photometric_loss");
                     lfs::core::Tensor tile_loss;
@@ -2252,6 +2334,8 @@ namespace lfs::training {
                 pipelined_config.prefetch_count = COLD_PREFETCH_COUNT;
                 LOG_INFO("{:.0f}% non-JPEG images, using {} cold threads", non_jpeg_ratio * 100.0f, cold_threads);
             }
+
+            pipelined_config = tunePipelinedLoaderConfig(pipelined_config, train_dataset_);
 
             const bool alpha_available = scene_ && scene_->imagesHaveAlpha();
             PipelinedMaskConfig mask_pipeline_config;
