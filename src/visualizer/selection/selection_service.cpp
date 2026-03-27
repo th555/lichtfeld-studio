@@ -14,6 +14,7 @@
 #include "rendering/rendering_manager.hpp"
 #include "scene/scene_manager.hpp"
 #include "selection_group_mask.hpp"
+#include "training/training_manager.hpp"
 #include "visualizer_impl.hpp"
 #include <algorithm>
 #include <array>
@@ -23,6 +24,8 @@
 #include <glm/geometric.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/trigonometric.hpp>
+#include <optional>
+#include <shared_mutex>
 
 namespace lfs::vis {
 
@@ -113,6 +116,17 @@ namespace lfs::vis {
             }
             const auto bool_mask = (mask.dtype() == core::DataType::Bool) ? mask : mask.to(core::DataType::Bool);
             return static_cast<size_t>(bool_mask.sum_scalar());
+        }
+
+        [[nodiscard]] std::optional<std::shared_lock<std::shared_mutex>> acquireLiveModelRenderLock(
+            const SceneManager* const scene_manager) {
+            std::optional<std::shared_lock<std::shared_mutex>> lock;
+            if (const auto* tm = scene_manager ? scene_manager->getTrainerManager() : nullptr) {
+                if (const auto* trainer = tm->getTrainer()) {
+                    lock.emplace(trainer->getRenderMutex());
+                }
+            }
+            return lock;
         }
 
         [[nodiscard]] float distanceSquaredToSegment(const glm::vec2 point,
@@ -956,6 +970,7 @@ namespace lfs::vis {
             return nullptr;
         }
 
+        auto render_lock = acquireLiveModelRenderLock(scene_manager_);
         auto cameras = scene_manager_->getScene().getAllCameras();
         if (camera_index >= static_cast<int>(cameras.size()) || !cameras[camera_index]) {
             return nullptr;
@@ -998,6 +1013,7 @@ namespace lfs::vis {
             return nullptr;
         }
 
+        auto render_lock = acquireLiveModelRenderLock(scene_manager_);
         auto* const engine = rendering_manager_->getRenderingEngine();
         if (!engine || !engine->isInitialized()) {
             return nullptr;
@@ -1106,6 +1122,7 @@ namespace lfs::vis {
             return std::nullopt;
         }
 
+        auto render_lock = acquireLiveModelRenderLock(scene_manager_);
         auto* const engine = rendering_manager_->getRenderingEngine();
         if (!engine || !engine->isInitialized()) {
             return std::nullopt;
@@ -1596,6 +1613,7 @@ namespace lfs::vis {
             return;
         }
 
+        auto render_lock = acquireLiveModelRenderLock(scene_manager_);
         const auto* const model = scene_manager_->getModelForRendering();
         if (!model || model->size() == 0) {
             return;
@@ -1653,6 +1671,7 @@ namespace lfs::vis {
             return;
         }
 
+        auto render_lock = acquireLiveModelRenderLock(scene_manager_);
         const auto* const model = scene_manager_->getModelForRendering();
         if (!model || model->size() == 0) {
             return;

@@ -560,119 +560,131 @@ namespace lfs::rendering {
         // Coordinate with training: wait for training, use shared arena
         auto& arena = lfs::core::GlobalArenaManager::instance().get_arena();
         arena.set_rendering_active(true);
-        arena.wait_for_training();
-        uint64_t frame_id = arena.begin_frame(true); // true = from_rendering
-        auto arena_allocator = arena.get_allocator(frame_id);
+        bool frame_started = false;
+        uint64_t frame_id = 0;
 
-        const std::function<char*(size_t)> per_primitive_buffers_func = arena_allocator;
-        const std::function<char*(size_t)> per_tile_buffers_func = arena_allocator;
-        const std::function<char*(size_t)> per_instance_buffers_func = arena_allocator;
+        try {
+            frame_id = arena.begin_frame(true); // true = from_rendering
+            frame_started = true;
+            auto arena_allocator = arena.get_allocator(frame_id);
 
-        Tensor w2c_contig = w2c.is_contiguous() ? w2c : w2c.contiguous();
-        Tensor cam_pos_contig = cam_position.is_contiguous() ? cam_position : cam_position.contiguous();
+            const std::function<char*(size_t)> per_primitive_buffers_func = arena_allocator;
+            const std::function<char*(size_t)> per_tile_buffers_func = arena_allocator;
+            const std::function<char*(size_t)> per_instance_buffers_func = arena_allocator;
 
-        const auto prepared_inputs = prepare_forward_shared_inputs(
-            n_primitives,
-            model_transforms,
-            transform_indices,
-            selection_mask,
-            preview_selection_out,
-            crop_box_transform,
-            crop_box_min,
-            crop_box_max,
-            ellipsoid_transform,
-            ellipsoid_radii,
-            view_volume_transform,
-            view_volume_min,
-            view_volume_max,
-            deleted_mask,
-            emphasized_node_mask,
-            node_visibility_mask);
+            Tensor w2c_contig = w2c.is_contiguous() ? w2c : w2c.contiguous();
+            Tensor cam_pos_contig = cam_position.is_contiguous() ? cam_position : cam_position.contiguous();
 
-        // Prepare screen positions output buffer if requested
-        float2* screen_positions_ptr = nullptr;
-        if (screen_positions_out != nullptr) {
-            *screen_positions_out = Tensor::empty({static_cast<size_t>(n_primitives), 2},
-                                                  lfs::core::Device::CUDA, lfs::core::DataType::Float32);
-            screen_positions_ptr = reinterpret_cast<float2*>(screen_positions_out->ptr<float>());
+            const auto prepared_inputs = prepare_forward_shared_inputs(
+                n_primitives,
+                model_transforms,
+                transform_indices,
+                selection_mask,
+                preview_selection_out,
+                crop_box_transform,
+                crop_box_min,
+                crop_box_max,
+                ellipsoid_transform,
+                ellipsoid_radii,
+                view_volume_transform,
+                view_volume_min,
+                view_volume_max,
+                deleted_mask,
+                emphasized_node_mask,
+                node_visibility_mask);
+
+            // Prepare screen positions output buffer if requested
+            float2* screen_positions_ptr = nullptr;
+            if (screen_positions_out != nullptr) {
+                *screen_positions_out = Tensor::empty({static_cast<size_t>(n_primitives), 2},
+                                                      lfs::core::Device::CUDA, lfs::core::DataType::Float32);
+                screen_positions_ptr = reinterpret_cast<float2*>(screen_positions_out->ptr<float>());
+            }
+
+            forward(
+                per_primitive_buffers_func,
+                per_tile_buffers_func,
+                per_instance_buffers_func,
+                reinterpret_cast<const float3*>(means.ptr<float>()),
+                reinterpret_cast<const float3*>(scales_raw.ptr<float>()),
+                reinterpret_cast<const float4*>(rotations_raw.ptr<float>()),
+                opacities_raw.ptr<float>(),
+                reinterpret_cast<const float3*>(sh_coefficients_0.ptr<float>()),
+                reinterpret_cast<const float3*>(sh_coefficients_rest.ptr<float>()),
+                reinterpret_cast<const float4*>(w2c_contig.ptr<float>()),
+                reinterpret_cast<const float3*>(cam_pos_contig.ptr<float>()),
+                image.ptr<float>(),
+                alpha.ptr<float>(),
+                depth.ptr<float>(),
+                n_primitives,
+                active_sh_bases,
+                total_bases_sh_rest,
+                width,
+                height,
+                focal_x,
+                focal_y,
+                center_x,
+                center_y,
+                near_plane,
+                far_plane,
+                show_rings,
+                ring_width,
+                prepared_inputs.model_transforms_ptr,
+                prepared_inputs.transform_indices_ptr,
+                prepared_inputs.num_transforms,
+                prepared_inputs.selection_mask_ptr,
+                screen_positions_ptr,
+                cursor_active,
+                cursor_x,
+                cursor_y,
+                cursor_radius,
+                preview_selection_add_mode,
+                prepared_inputs.preview_selection_ptr,
+                cursor_saturation_preview,
+                cursor_saturation_amount,
+                show_center_markers,
+                prepared_inputs.crop_box_transform_ptr,
+                prepared_inputs.crop_box_min_ptr,
+                prepared_inputs.crop_box_max_ptr,
+                crop_inverse,
+                crop_desaturate,
+                crop_parent_node_index,
+                prepared_inputs.ellipsoid_transform_ptr,
+                prepared_inputs.ellipsoid_radii_ptr,
+                ellipsoid_inverse,
+                ellipsoid_desaturate,
+                ellipsoid_parent_node_index,
+                prepared_inputs.view_volume_transform_ptr,
+                prepared_inputs.view_volume_min_ptr,
+                prepared_inputs.view_volume_max_ptr,
+                view_volume_cull,
+                prepared_inputs.deleted_mask_ptr,
+                hovered_depth_id,
+                focused_gaussian_id,
+                prepared_inputs.emphasized_node_mask_ptr,
+                prepared_inputs.num_selected_nodes,
+                dim_non_emphasized,
+                prepared_inputs.visibility_mask.ptr,
+                prepared_inputs.visibility_mask.count,
+                emphasis_flash_intensity,
+                orthographic,
+                ortho_scale,
+                mip_filter,
+                prepared_inputs.visible_indices_ptr,
+                prepared_inputs.actual_visible_count);
+
+            arena.end_frame(frame_id, true); // true = from_rendering
+            frame_started = false;
+            arena.set_rendering_active(false);
+
+            return {std::move(image), std::move(alpha), std::move(depth)};
+        } catch (...) {
+            if (frame_started) {
+                arena.end_frame(frame_id, true);
+            }
+            arena.set_rendering_active(false);
+            throw;
         }
-
-        forward(
-            per_primitive_buffers_func,
-            per_tile_buffers_func,
-            per_instance_buffers_func,
-            reinterpret_cast<const float3*>(means.ptr<float>()),
-            reinterpret_cast<const float3*>(scales_raw.ptr<float>()),
-            reinterpret_cast<const float4*>(rotations_raw.ptr<float>()),
-            opacities_raw.ptr<float>(),
-            reinterpret_cast<const float3*>(sh_coefficients_0.ptr<float>()),
-            reinterpret_cast<const float3*>(sh_coefficients_rest.ptr<float>()),
-            reinterpret_cast<const float4*>(w2c_contig.ptr<float>()),
-            reinterpret_cast<const float3*>(cam_pos_contig.ptr<float>()),
-            image.ptr<float>(),
-            alpha.ptr<float>(),
-            depth.ptr<float>(),
-            n_primitives,
-            active_sh_bases,
-            total_bases_sh_rest,
-            width,
-            height,
-            focal_x,
-            focal_y,
-            center_x,
-            center_y,
-            near_plane,
-            far_plane,
-            show_rings,
-            ring_width,
-            prepared_inputs.model_transforms_ptr,
-            prepared_inputs.transform_indices_ptr,
-            prepared_inputs.num_transforms,
-            prepared_inputs.selection_mask_ptr,
-            screen_positions_ptr,
-            cursor_active,
-            cursor_x,
-            cursor_y,
-            cursor_radius,
-            preview_selection_add_mode,
-            prepared_inputs.preview_selection_ptr,
-            cursor_saturation_preview,
-            cursor_saturation_amount,
-            show_center_markers,
-            prepared_inputs.crop_box_transform_ptr,
-            prepared_inputs.crop_box_min_ptr,
-            prepared_inputs.crop_box_max_ptr,
-            crop_inverse,
-            crop_desaturate,
-            crop_parent_node_index,
-            prepared_inputs.ellipsoid_transform_ptr,
-            prepared_inputs.ellipsoid_radii_ptr,
-            ellipsoid_inverse,
-            ellipsoid_desaturate,
-            ellipsoid_parent_node_index,
-            prepared_inputs.view_volume_transform_ptr,
-            prepared_inputs.view_volume_min_ptr,
-            prepared_inputs.view_volume_max_ptr,
-            view_volume_cull,
-            prepared_inputs.deleted_mask_ptr,
-            hovered_depth_id,
-            focused_gaussian_id,
-            prepared_inputs.emphasized_node_mask_ptr,
-            prepared_inputs.num_selected_nodes,
-            dim_non_emphasized,
-            prepared_inputs.visibility_mask.ptr,
-            prepared_inputs.visibility_mask.count,
-            emphasis_flash_intensity,
-            orthographic,
-            ortho_scale,
-            mip_filter,
-            prepared_inputs.visible_indices_ptr,
-            prepared_inputs.actual_visible_count);
-
-        arena.end_frame(frame_id, true); // true = from_rendering
-        arena.set_rendering_active(false);
-
-        return {std::move(image), std::move(alpha), std::move(depth)};
     }
 
     std::array<ForwardWrapperTensorResult, 2> forward_wrapper_tensor_dual(
@@ -715,16 +727,19 @@ namespace lfs::rendering {
 
         auto& arena = lfs::core::GlobalArenaManager::instance().get_arena();
         arena.set_rendering_active(true);
-        arena.wait_for_training();
-        uint64_t frame_id = arena.begin_frame(true);
-        auto arena_allocator = arena.get_allocator(frame_id);
-
-        const auto cleanup = [&]() {
-            arena.end_frame(frame_id, true);
-            arena.set_rendering_active(false);
-        };
-
+        bool frame_started = false;
+        uint64_t frame_id = 0;
         try {
+            frame_id = arena.begin_frame(true);
+            frame_started = true;
+            auto arena_allocator = arena.get_allocator(frame_id);
+
+            const auto cleanup = [&]() {
+                arena.end_frame(frame_id, true);
+                frame_started = false;
+                arena.set_rendering_active(false);
+            };
+
             const auto prepared_inputs = prepare_forward_shared_inputs(
                 n_primitives,
                 shared.model_transforms,
@@ -841,13 +856,15 @@ namespace lfs::rendering {
             }
 
             CachedDualForwardExecutor::instance().run(std::move(tasks), device);
-        } catch (...) {
             cleanup();
+            return outputs;
+        } catch (...) {
+            if (frame_started) {
+                arena.end_frame(frame_id, true);
+            }
+            arena.set_rendering_active(false);
             throw;
         }
-
-        cleanup();
-        return outputs;
     }
 
     void brush_select_tensor(
