@@ -4,8 +4,8 @@
 
 #include "py_scripts.hpp"
 
-#include "core/path_utils.hpp"
 #include "core/logger.hpp"
+#include "core/path_utils.hpp"
 #include "python/runner.hpp"
 #include "visualizer/gui/panels/python_scripts_panel.hpp"
 
