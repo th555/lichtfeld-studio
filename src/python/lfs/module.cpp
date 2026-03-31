@@ -1741,7 +1741,7 @@ Example:
     });
 
     // Module metadata
-    m.attr("__version__") = "0.1.0";
+    m.attr("__version__") = GIT_TAGGED_VERSION;
     m.attr("__all__") = nb::make_tuple(
         // Core access
         "context", "gaussians", "session", "get_scene",
