@@ -50,6 +50,34 @@ namespace lfs::vis::input {
             }
         }
 
+        [[nodiscard]] bool actionAllowsExtraMouseModifiers(const Action action) {
+            switch (action) {
+            case Action::CAMERA_ORBIT:
+            case Action::CAMERA_PAN:
+            case Action::CAMERA_SET_PIVOT:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        [[nodiscard]] bool actionPrefersSingleMouseButtonCapture(const Action action) {
+            switch (action) {
+            case Action::CAMERA_ORBIT:
+            case Action::CAMERA_PAN:
+            case Action::CAMERA_SET_PIVOT:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        [[nodiscard]] bool triggerUsesDefaultRedoBinding(const std::optional<InputTrigger>& trigger) {
+            const auto* key_trigger = trigger ? std::get_if<KeyTrigger>(&*trigger) : nullptr;
+            return key_trigger && key_trigger->key == KEY_Y &&
+                   key_trigger->modifiers == MODIFIER_CTRL;
+        }
+
         [[nodiscard]] Binding normalizeLoadedBinding(Binding binding) {
             if (!isSelectionDepthAction(binding.action)) {
                 return binding;
@@ -299,6 +327,14 @@ namespace lfs::vis::input {
         if (auto it = key_map_.find({mode, key, mods}); it != key_map_.end()) {
             return it->second;
         }
+
+        // Support the common redo alias when the profile still uses the default Ctrl+Y binding.
+        if (key == KEY_Z &&
+            mods == (MODIFIER_CTRL | MODIFIER_SHIFT) &&
+            triggerUsesDefaultRedoBinding(getTriggerForAction(Action::REDO, mode))) {
+            return Action::REDO;
+        }
+
         return Action::NONE;
     }
 
@@ -307,10 +343,24 @@ namespace lfs::vis::input {
         if (auto it = mouse_button_map_.find({mode, button, mods, is_double_click}); it != mouse_button_map_.end()) {
             return it->second;
         }
+        if (mods != MODIFIER_NONE) {
+            if (auto it = mouse_button_map_.find({mode, button, MODIFIER_NONE, is_double_click});
+                it != mouse_button_map_.end() &&
+                actionAllowsExtraMouseModifiers(it->second)) {
+                return it->second;
+            }
+        }
         // If double-click, also try single-click binding in same mode
         if (is_double_click) {
             if (auto it = mouse_button_map_.find({mode, button, mods, false}); it != mouse_button_map_.end()) {
                 return it->second;
+            }
+            if (mods != MODIFIER_NONE) {
+                if (auto it = mouse_button_map_.find({mode, button, MODIFIER_NONE, false});
+                    it != mouse_button_map_.end() &&
+                    actionAllowsExtraMouseModifiers(it->second)) {
+                    return it->second;
+                }
             }
         }
         return Action::NONE;
@@ -328,6 +378,13 @@ namespace lfs::vis::input {
         const int mods = modifiers & MODIFIER_MASK;
         if (auto it = drag_map_.find({mode, button, mods}); it != drag_map_.end()) {
             return it->second;
+        }
+        if (mods != MODIFIER_NONE) {
+            if (auto it = drag_map_.find({mode, button, MODIFIER_NONE});
+                it != drag_map_.end() &&
+                actionAllowsExtraMouseModifiers(it->second)) {
+                return it->second;
+            }
         }
         return Action::NONE;
     }
@@ -854,9 +911,15 @@ namespace lfs::vis::input {
 
         if (elapsed >= CaptureState::DOUBLE_CLICK_WAIT_TIME) {
             const auto mouse_btn = static_cast<MouseButton>(capture_state_.pending_button);
-            const MouseDragTrigger trigger{mouse_btn, capture_state_.pending_mods};
-            setBinding(capture_state_.mode, capture_state_.action, trigger);
-            capture_state_.captured = trigger;
+            if (actionPrefersSingleMouseButtonCapture(capture_state_.action)) {
+                const MouseButtonTrigger trigger{mouse_btn, capture_state_.pending_mods, false};
+                setBinding(capture_state_.mode, capture_state_.action, trigger);
+                capture_state_.captured = trigger;
+            } else {
+                const MouseDragTrigger trigger{mouse_btn, capture_state_.pending_mods};
+                setBinding(capture_state_.mode, capture_state_.action, trigger);
+                capture_state_.captured = trigger;
+            }
             capture_state_.active = false;
             capture_state_.waiting_for_double_click = false;
             capture_state_.pending_button = -1;

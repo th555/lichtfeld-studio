@@ -935,6 +935,10 @@ namespace lfs::vis::gui {
         drag_drop_.pollEvents();
         drag_drop_hovering_ = drag_drop_.isDragHovering();
 
+        if (auto* input_controller = viewer_->getInputController()) {
+            input_controller->getBindings().updateCapture();
+        }
+
         // Start frame
         ImGui_ImplOpenGL3_NewFrame();
 

@@ -1334,6 +1334,10 @@ namespace lfs::vis {
         if (!shouldCameraHandleInput() || drag_mode_ == DragMode::Gizmo || drag_mode_ == DragMode::Splitter)
             return;
 
+        // Keep physical movement layout-independent, but do not start it from control/meta chords.
+        if ((mods & (input::KEYMOD_CTRL | input::KEYMOD_ALT | input::KEYMOD_SUPER)) != 0)
+            return;
+
         // Use cached movement key bindings
         const bool pressed = (action != input::ACTION_RELEASE);
         if (physical_key == movement_keys_.forward) {
