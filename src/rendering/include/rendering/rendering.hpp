@@ -535,7 +535,8 @@ namespace lfs::rendering {
             const CameraFrustumPickRequest& request) = 0;
 
         virtual void clearFrustumCache() = 0;
-        virtual void setFrustumImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader) = 0;
+        virtual void setFrustumImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader,
+                                           bool allow_fallback) = 0;
     };
 
 } // namespace lfs::rendering

@@ -33,7 +33,8 @@ namespace lfs::rendering {
         CameraFrustumRenderer() = default;
         ~CameraFrustumRenderer();
 
-        void setImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader);
+        void setImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader,
+                            bool allow_fallback);
 
         Result<void> init();
         Result<void> render(const std::vector<std::shared_ptr<const lfs::core::Camera>>& cameras,
@@ -93,6 +94,7 @@ namespace lfs::rendering {
             std::filesystem::path image_path;
             int image_width;
             int image_height;
+            uint64_t generation = 0;
         };
 
         struct LoadedThumbnail {
@@ -205,7 +207,10 @@ namespace lfs::rendering {
 
         std::thread thumbnail_loader_thread_;
         std::atomic<bool> thumbnail_loader_running_{false};
+        std::atomic<uint64_t> thumbnail_generation_{0};
         std::shared_ptr<lfs::io::PipelinedImageLoader> shared_loader_;
+        std::shared_ptr<lfs::io::PipelinedImageLoader> fallback_loader_;
+        bool allow_fallback_loader_ = true;
         std::mutex shared_loader_mutex_;
     };
 

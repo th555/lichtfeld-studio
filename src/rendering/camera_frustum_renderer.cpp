@@ -42,7 +42,8 @@ namespace lfs::rendering {
     }
 
     void CameraFrustumRenderer::clearThumbnailCache() {
-        const std::scoped_lock lock(pending_mutex_, load_queue_mutex_, ready_queue_mutex_);
+        thumbnail_generation_.fetch_add(1, std::memory_order_acq_rel);
+        const std::scoped_lock lock(shared_loader_mutex_, pending_mutex_, load_queue_mutex_, ready_queue_mutex_);
 
         thumbnail_pending_.clear();
         thumbnail_load_queue_ = {};
@@ -58,6 +59,7 @@ namespace lfs::rendering {
         camera_positions_.clear();
         last_scale_ = -1.0f;
         last_scene_transforms_.clear();
+        fallback_loader_.reset();
     }
 
     Result<void> CameraFrustumRenderer::init() {
@@ -929,28 +931,33 @@ namespace lfs::rendering {
         }
     }
 
-    void CameraFrustumRenderer::setImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader) {
+    void CameraFrustumRenderer::setImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader,
+                                               const bool allow_fallback) {
         std::lock_guard lock(shared_loader_mutex_);
         shared_loader_ = std::move(loader);
+        allow_fallback_loader_ = allow_fallback;
+        if (shared_loader_ || !allow_fallback_loader_) {
+            fallback_loader_.reset();
+        }
     }
 
     void CameraFrustumRenderer::thumbnailLoaderWorker() {
-        std::shared_ptr<lfs::io::PipelinedImageLoader> fallback;
-
         const auto get_loader = [&]() -> std::shared_ptr<lfs::io::PipelinedImageLoader> {
-            {
-                std::lock_guard lock(shared_loader_mutex_);
-                if (shared_loader_)
-                    return shared_loader_;
+            std::lock_guard lock(shared_loader_mutex_);
+            if (shared_loader_) {
+                return shared_loader_;
             }
-            if (!fallback) {
+            if (!allow_fallback_loader_) {
+                return {};
+            }
+            if (!fallback_loader_) {
                 lfs::io::PipelinedLoaderConfig config;
                 config.io_threads = 0;
                 config.cold_process_threads = 0;
                 config.max_cache_bytes = 64ULL * 1024 * 1024;
-                fallback = std::make_shared<lfs::io::PipelinedImageLoader>(config);
+                fallback_loader_ = std::make_shared<lfs::io::PipelinedImageLoader>(config);
             }
-            return fallback;
+            return fallback_loader_;
         };
 
         while (thumbnail_loader_running_) {
@@ -972,16 +979,31 @@ namespace lfs::rendering {
                 thumbnail_load_queue_.pop();
             }
 
+            const uint64_t current_generation = thumbnail_generation_.load(std::memory_order_acquire);
+            if (request.generation != current_generation) {
+                continue;
+            }
+
             LoadedThumbnail loaded;
             loaded.camera_uid = request.camera_uid;
 
             try {
                 auto loader = get_loader();
+                if (!loader) {
+                    if (request.generation == thumbnail_generation_.load(std::memory_order_acquire)) {
+                        std::lock_guard lock(pending_mutex_);
+                        thumbnail_pending_.erase(request.camera_uid);
+                    }
+                    continue;
+                }
 
                 lfs::io::LoadParams params;
                 params.max_width = THUMBNAIL_SIZE;
 
                 auto tensor = loader->load_image_immediate(request.image_path, params);
+                if (request.generation != thumbnail_generation_.load(std::memory_order_acquire)) {
+                    continue;
+                }
                 assert(tensor.ndim() == 3);
 
                 // float32 [C,H,W] on GPU → uint8 [H,W,C] on CPU with Y-flip
@@ -1012,8 +1034,10 @@ namespace lfs::rendering {
 
             } catch (const std::exception& e) {
                 LOG_WARN("Thumbnail load failed for camera {}: {}", request.camera_uid, e.what());
-                std::lock_guard lock(pending_mutex_);
-                thumbnail_pending_.erase(request.camera_uid);
+                if (request.generation == thumbnail_generation_.load(std::memory_order_acquire)) {
+                    std::lock_guard lock(pending_mutex_);
+                    thumbnail_pending_.erase(request.camera_uid);
+                }
             }
         }
     }
@@ -1033,7 +1057,8 @@ namespace lfs::rendering {
             .camera_uid = uid,
             .image_path = camera.image_path(),
             .image_width = camera.image_width(),
-            .image_height = camera.image_height()};
+            .image_height = camera.image_height(),
+            .generation = thumbnail_generation_.load(std::memory_order_acquire)};
 
         {
             std::lock_guard lock(load_queue_mutex_);

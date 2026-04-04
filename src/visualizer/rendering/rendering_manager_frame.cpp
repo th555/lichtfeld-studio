@@ -39,6 +39,11 @@ namespace lfs::vis {
             initialize();
         }
 
+        if (frustum_loader_dirty_.load(std::memory_order_relaxed) ||
+            frustum_loader_poll_until_ready_.load(std::memory_order_relaxed)) {
+            syncFrustumImageLoader(scene_manager);
+        }
+
         if (scene_manager && (dirty_mask_.load(std::memory_order_relaxed) & DirtyFlag::SELECTION)) {
             for (const auto& group : scene_manager->getScene().getSelectionGroups()) {
                 lfs::rendering::config::setSelectionGroupColor(

@@ -1418,8 +1418,9 @@ namespace lfs::rendering {
         camera_frustum_renderer_.clearThumbnailCache();
     }
 
-    void RenderingEngineImpl::setFrustumImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader) {
-        camera_frustum_renderer_.setImageLoader(std::move(loader));
+    void RenderingEngineImpl::setFrustumImageLoader(std::shared_ptr<lfs::io::PipelinedImageLoader> loader,
+                                                    const bool allow_fallback) {
+        camera_frustum_renderer_.setImageLoader(std::move(loader), allow_fallback);
     }
 
     glm::mat4 RenderingEngineImpl::createViewMatrix(const ViewportData& viewport) const {
