@@ -1478,12 +1478,20 @@ namespace lfs::core {
     NodeId Scene::addCamera(const std::string& name, const NodeId parent, std::shared_ptr<lfs::core::Camera> camera) {
         assert(camera && "Camera object cannot be null");
 
+        std::string unique_name = name;
+        if (name_to_id_.contains(unique_name)) {
+            int counter = 2;
+            while (name_to_id_.contains(unique_name)) {
+                unique_name = name + "_" + std::to_string(counter++);
+            }
+        }
+
         const NodeId id = next_node_id_++;
         auto node = std::make_unique<SceneNode>();
         node->id = id;
         node->parent_id = parent;
         node->type = NodeType::CAMERA;
-        node->name = name;
+        node->name = unique_name;
         node->camera = std::move(camera);
         node->camera_uid = node->camera->uid();
         node->image_path = lfs::core::path_to_utf8(node->camera->image_path());
@@ -1496,7 +1504,7 @@ namespace lfs::core {
         }
 
         id_to_index_[id] = nodes_.size();
-        name_to_id_[name] = id;
+        name_to_id_[unique_name] = id;
         node->initObservables(this);
         nodes_.push_back(std::move(node));
         notifyMutation(MutationType::NODE_ADDED);

@@ -138,7 +138,17 @@ namespace lfs::io {
                 const auto& info = camera_infos[i];
 
                 try {
-                    std::filesystem::path mask_path = mask_cache.find(info._image_name);
+                    std::filesystem::path mask_path;
+                    if (auto mask_lookup = mask_cache.lookup(info._image_name); mask_lookup.found()) {
+                        mask_path = std::move(mask_lookup.path);
+                    } else if (mask_lookup.ambiguous()) {
+                        return make_error(
+                            ErrorCode::INVALID_DATASET,
+                            std::format("Mask for image '{}' is ambiguous across the dataset mask folders. "
+                                        "Keep masks in the same relative subdirectories as the images or rename them uniquely.",
+                                        info._image_name),
+                            base_path);
+                    }
 
                     // Validate mask dimensions match image dimensions
                     if (!mask_path.empty()) {

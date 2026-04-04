@@ -123,15 +123,13 @@ namespace lfs::core {
             }
 
             // Match platform-specific CPython suffixes (e.g., lichtfeld.cpython-312-x86_64-linux-gnu.so).
-            for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-                if (ec) {
-                    break;
-                }
-                if (!entry.is_regular_file(ec)) {
+            for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+                std::error_code file_ec;
+                if (!it->is_regular_file(file_ec) || file_ec) {
                     continue;
                 }
-                const auto filename = entry.path().filename().string();
-                const auto ext = entry.path().extension().string();
+                const auto filename = it->path().filename().string();
+                const auto ext = it->path().extension().string();
                 if ((ext == ".so" || ext == ".pyd") && filename.rfind("lichtfeld", 0) == 0) {
                     return true;
                 }
@@ -190,7 +188,7 @@ namespace lfs::core {
 #endif
     }
 
-    inline std::filesystem::path preferredVcpkgPrefix(const std::filesystem::path& vcpkg_root) {
+    inline std::filesystem::path preferredVcpkgPrefix([[maybe_unused]] const std::filesystem::path& vcpkg_root) {
 #ifdef LFS_PYTHON_EXECUTABLE
         auto configured_prefix = std::filesystem::path(LFS_PYTHON_EXECUTABLE);
         for (int i = 0; i < 3 && !configured_prefix.empty(); ++i) {
@@ -229,11 +227,12 @@ namespace lfs::core {
         std::filesystem::path fallback;
         std::string fallback_name;
 
-        for (const auto& entry : std::filesystem::directory_iterator(vcpkg_root, ec)) {
-            if (!entry.is_directory(ec)) {
+        for (std::filesystem::directory_iterator it(vcpkg_root, ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code dir_ec;
+            if (!it->is_directory(dir_ec) || dir_ec) {
                 continue;
             }
-            const auto triplet_dir = entry.path();
+            const auto triplet_dir = it->path();
             const auto name = triplet_dir.filename().string();
             if (name == "vcpkg" || name.starts_with(".")) {
                 continue;

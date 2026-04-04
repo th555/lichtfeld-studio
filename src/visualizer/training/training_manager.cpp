@@ -30,7 +30,7 @@ namespace lfs::vis {
             cleanupTrainingResources(resources);
         });
 
-        state_machine_.setStateChangeCallback([this](TrainingState old_state, TrainingState new_state) {
+        state_machine_.setStateChangeCallback([this](TrainingState, TrainingState new_state) {
             // Emit events on state changes
             if (new_state == TrainingState::Idle) {
                 loss_buffer_.clear();
