@@ -21,7 +21,7 @@ namespace {
         }
         return static_cast<int>(value);
     }
-}
+} // namespace
 
 // sorting is done separately for depth and tile as proposed in https://github.com/m-schuetz/Splatshop
 std::tuple<int, int, int, int> edge_compute::rasterization::edge_forward(
