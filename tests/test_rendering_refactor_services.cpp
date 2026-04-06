@@ -703,6 +703,22 @@ namespace lfs::vis {
         EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
     }
 
+    TEST_F(RenderingManagerEventsTest, SceneClearedResetsFrustumLoaderSyncCache) {
+        RenderingManager manager;
+        manager.frustum_loader_sync_initialized_ = true;
+        manager.synced_frustum_allow_fallback_ = true;
+        manager.frustum_loader_dirty_.store(true, std::memory_order_relaxed);
+        manager.frustum_loader_poll_until_ready_.store(true, std::memory_order_relaxed);
+
+        lfs::core::events::state::SceneCleared{}.emit();
+
+        EXPECT_TRUE(manager.frustum_loader_sync_initialized_);
+        EXPECT_FALSE(manager.synced_frustum_loader_);
+        EXPECT_FALSE(manager.synced_frustum_allow_fallback_);
+        EXPECT_FALSE(manager.frustum_loader_dirty_.load(std::memory_order_relaxed));
+        EXPECT_FALSE(manager.frustum_loader_poll_until_ready_.load(std::memory_order_relaxed));
+    }
+
     TEST_F(RenderingManagerEventsTest, ToggleIndependentSplitViewInitializesSecondaryViewport) {
         RenderingManager manager;
         Viewport primary_viewport(800, 600);

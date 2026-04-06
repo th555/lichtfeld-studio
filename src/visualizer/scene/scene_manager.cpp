@@ -163,10 +163,6 @@ namespace lfs::vis {
                 op::SceneGraphMetadataEntry::captureNodes(*this, {cmd.name}));
         });
 
-        cmd::ClearScene::when([this](const auto&) {
-            clear();
-        });
-
         cmd::SwitchToEditMode::when([this](const auto&) {
             switchToEditMode();
         });
@@ -358,7 +354,9 @@ namespace lfs::vis {
             core::Scene::Transaction txn(scene_);
 
             // Clear existing scene
-            clear();
+            if (!clear()) {
+                return;
+            }
 
             // Load the file
             LOG_DEBUG("Creating loader for splat file");
@@ -671,6 +669,7 @@ namespace lfs::vis {
             content_type_ = ContentType::Empty;
             splat_paths_.clear();
             dataset_path_.clear();
+            cached_params_.reset();
         }
 
         state::SceneCleared{}.emit();
@@ -1737,7 +1736,9 @@ namespace lfs::vis {
             if (services().trainerOrNull()) {
                 services().trainerOrNull()->clearTrainer();
             }
-            clear();
+            if (!clear()) {
+                return std::unexpected("Failed to clear existing scene");
+            }
 
             auto dataset_params = params;
             dataset_params.dataset.data_path = path;
@@ -1811,7 +1812,9 @@ namespace lfs::vis {
             if (services().trainerOrNull()) {
                 services().trainerOrNull()->clearTrainer();
             }
-            clear();
+            if (!clear()) {
+                return std::unexpected("Failed to clear existing scene");
+            }
 
             cached_params_ = dataset_params;
 
@@ -2023,7 +2026,9 @@ namespace lfs::vis {
             if (services().trainerOrNull()) {
                 services().trainerOrNull()->clearTrainer();
             }
-            clear();
+            if (!clear()) {
+                throw std::runtime_error("Failed to clear existing scene");
+            }
 
             cached_params_ = checkpoint_params;
 
@@ -2098,7 +2103,7 @@ namespace lfs::vis {
         }
     }
 
-    void SceneManager::clear() {
+    bool SceneManager::clear() {
         LOG_DEBUG("Clearing scene");
 
         // Check if clearing is allowed via state machine
@@ -2106,11 +2111,12 @@ namespace lfs::vis {
             if (!services().trainerOrNull()->canPerform(TrainingAction::ClearScene)) {
                 LOG_WARN("Cannot clear scene: {}",
                          services().trainerOrNull()->getActionBlockedReason(TrainingAction::ClearScene));
-                return;
+                return false;
             }
         }
         op::undoHistory().clear();
         resetToEmptyState(false);
+        return true;
     }
 
     void SceneManager::switchToEditMode() {
