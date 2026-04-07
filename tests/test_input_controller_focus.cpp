@@ -11,8 +11,8 @@
 #include "internal/viewport.hpp"
 #include "rendering/coordinate_conventions.hpp"
 
-#include <gtest/gtest.h>
 #include <glm/gtc/constants.hpp>
+#include <gtest/gtest.h>
 #include <variant>
 #include <imgui.h>
 
