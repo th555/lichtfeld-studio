@@ -639,7 +639,15 @@
     "theme_vignette": "Enable viewport edge darkening",
     "theme_vignette_intensity": "Adjust vignette darkness (0-1)",
     "theme_vignette_radius": "Adjust where the vignette starts (0-1)",
-    "theme_vignette_softness": "Adjust vignette edge softness (0-1)"
+    "theme_vignette_softness": "Adjust vignette edge softness (0-1)",
+    "simplify_source": "Selected splat node used as the simplification input",
+    "simplify_target": "Target number of Gaussians to keep in the simplified result",
+    "simplify_knn_k": "Neighborhood size used to evaluate merge candidates",
+    "simplify_merge_cap": "Maximum fraction of Gaussians that can merge in a single pass",
+    "simplify_opacity_prune": "Prune Gaussians below this opacity threshold before merging",
+    "simplify_output": "Name of the new simplified splat node that will be added to the scene",
+    "simplify_apply": "Create a new simplified splat node from the selected source",
+    "simplify_cancel": "Cancel the active splat simplify job"
   },
   "exit_popup": {
     "title": "Exit Application?",
@@ -965,7 +973,16 @@
     "dismiss": "Dismiss"
   },
   "rendering_panel": {
-    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "Splat Simplify",
+    "simplify_source": "Source",
+    "simplify_select_source": "Select a splat node",
+    "simplify_target": "Target",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "Merge Cap",
+    "simplify_opacity_prune": "Opacity Prune",
+    "simplify_original": "Original",
+    "simplify_output": "Output"
   },
   "scripts_panel": {
     "actions": "Actions",

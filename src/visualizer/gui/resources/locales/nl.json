@@ -586,6 +586,14 @@
     "theme_vignette_intensity": "Donkerheid van vignet aanpassen (0-1)",
     "theme_vignette_radius": "Aanpassen waar het vignet begint (0-1)",
     "theme_vignette_softness": "Zachtheid van de vignetrand aanpassen (0-1)",
+    "simplify_source": "Geselecteerd splat-knooppunt dat als invoer voor de vereenvoudiging wordt gebruikt",
+    "simplify_target": "Doelaantal Gaussians om in het vereenvoudigde resultaat te behouden",
+    "simplify_knn_k": "Grootte van de buurt die wordt gebruikt om samenvoegkandidaten te beoordelen",
+    "simplify_merge_cap": "Maximale fractie Gaussians die in één doorgang kunnen samenvoegen",
+    "simplify_opacity_prune": "Verwijder Gaussians onder deze opaciteitsdrempel vóór het samenvoegen",
+    "simplify_output": "Naam van het nieuwe vereenvoudigde splat-knooppunt dat aan de scène wordt toegevoegd",
+    "simplify_apply": "Maak een nieuw vereenvoudigd splat-knooppunt van de geselecteerde bron",
+    "simplify_cancel": "Annuleer de actieve splat-vereenvoudigingstaak",
     "render_scale": "Viewer resolutie (lager = minder VRAM)",
     "point_cloud_forced": "Gedwongen voor training start",
     "desaturate_unselected": "Dim niet-geselecteerde PLY's",
@@ -1016,7 +1024,16 @@
     "keyframe_preview": "Keyframe {} voorbeeld"
   },
   "rendering_panel": {
-    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "Splat-vereenvoudiging",
+    "simplify_source": "Bron",
+    "simplify_select_source": "Selecteer een splat-knooppunt",
+    "simplify_target": "Doel",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "Samenvoeglimiet",
+    "simplify_opacity_prune": "Opaciteitssnoei",
+    "simplify_original": "Origineel",
+    "simplify_output": "Uitvoer"
   },
   "scripts_panel": {
     "actions": "Acties",

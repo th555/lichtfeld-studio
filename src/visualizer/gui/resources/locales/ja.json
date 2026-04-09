@@ -586,6 +586,14 @@
     "theme_vignette_intensity": "ビネットの暗さを調整 (0-1)",
     "theme_vignette_radius": "ビネットが始まる位置を調整 (0-1)",
     "theme_vignette_softness": "ビネット境界の柔らかさを調整 (0-1)",
+    "simplify_source": "簡略化の入力として使う選択中のスプラットノード",
+    "simplify_target": "簡略化結果に残すガウシアン数の目標値",
+    "simplify_knn_k": "統合候補を評価するために使う近傍サイズ",
+    "simplify_merge_cap": "1回のパスで統合できるガウシアンの最大割合",
+    "simplify_opacity_prune": "統合前にこの不透明度しきい値未満のガウシアンを削除",
+    "simplify_output": "シーンに追加される新しい簡略化スプラットノードの名前",
+    "simplify_apply": "選択した入力から新しい簡略化スプラットノードを作成",
+    "simplify_cancel": "実行中のスプラット簡略化ジョブをキャンセル",
     "render_scale": "ビューア解像度（低い=VRAM削減）",
     "point_cloud_forced": "トレーニング開始前に強制",
     "desaturate_unselected": "未選択PLYを暗くする",
@@ -1016,7 +1024,16 @@
     "keyframe_preview": "キーフレーム {} プレビュー"
   },
   "rendering_panel": {
-    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "スプラット簡略化",
+    "simplify_source": "ソース",
+    "simplify_select_source": "スプラットノードを選択",
+    "simplify_target": "目標",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "統合上限",
+    "simplify_opacity_prune": "不透明度プルーニング",
+    "simplify_original": "元データ",
+    "simplify_output": "出力"
   },
   "scripts_panel": {
     "actions": "アクション",

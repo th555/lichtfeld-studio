@@ -586,6 +586,14 @@
     "theme_vignette_intensity": "调整暗角暗度 (0-1)",
     "theme_vignette_radius": "调整暗角开始的位置 (0-1)",
     "theme_vignette_softness": "调整暗角边缘的柔和度 (0-1)",
+    "simplify_source": "用作简化输入的已选 splat 节点",
+    "simplify_target": "简化结果中要保留的目标高斯数量",
+    "simplify_knn_k": "用于评估合并候选的邻域大小",
+    "simplify_merge_cap": "单次迭代中允许合并的高斯最大比例",
+    "simplify_opacity_prune": "在合并前剪除低于该不透明度阈值的高斯",
+    "simplify_output": "将要添加到场景中的新简化 splat 节点名称",
+    "simplify_apply": "根据所选来源创建一个新的简化 splat 节点",
+    "simplify_cancel": "取消当前正在运行的 splat 简化任务",
     "render_scale": "查看器分辨率（越低=越少VRAM）",
     "point_cloud_forced": "训练开始前强制启用",
     "desaturate_unselected": "使未选择的PLY变暗",
@@ -1016,7 +1024,16 @@
     "keyframe_preview": "关键帧 {} 预览"
   },
   "rendering_panel": {
-    "fov_format": "FOV：{hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV：{hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "Splat 简化",
+    "simplify_source": "来源",
+    "simplify_select_source": "选择一个 splat 节点",
+    "simplify_target": "目标",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "合并上限",
+    "simplify_opacity_prune": "不透明度剪枝",
+    "simplify_original": "原始",
+    "simplify_output": "输出"
   },
   "scripts_panel": {
     "actions": "操作",

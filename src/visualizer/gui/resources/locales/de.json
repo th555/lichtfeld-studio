@@ -586,6 +586,14 @@
     "theme_vignette_intensity": "Dunkelheit der Vignette anpassen (0-1)",
     "theme_vignette_radius": "Anpassen, wo die Vignette beginnt (0-1)",
     "theme_vignette_softness": "Weichheit des Vignettenrands anpassen (0-1)",
+    "simplify_source": "Ausgewählter Splat-Knoten, der als Eingabe für die Vereinfachung dient",
+    "simplify_target": "Zielanzahl an Gaussians, die im vereinfachten Ergebnis erhalten bleiben",
+    "simplify_knn_k": "Nachbarschaftsgröße zur Bewertung von Merge-Kandidaten",
+    "simplify_merge_cap": "Maximaler Anteil an Gaussians, die in einem Durchgang zusammengeführt werden können",
+    "simplify_opacity_prune": "Gaussians unterhalb dieses Opazitätsschwellenwerts vor dem Mergen entfernen",
+    "simplify_output": "Name des neuen vereinfachten Splat-Knotens, der der Szene hinzugefügt wird",
+    "simplify_apply": "Einen neuen vereinfachten Splat-Knoten aus der ausgewählten Quelle erzeugen",
+    "simplify_cancel": "Aktiven Splat-Vereinfachungsauftrag abbrechen",
     "render_scale": "Viewer-Auflösung (niedriger = weniger VRAM)",
     "point_cloud_forced": "Vor Trainingsstart erzwungen",
     "desaturate_unselected": "Nicht ausgewählte PLYs abdunkeln",
@@ -1016,7 +1024,16 @@
     "keyframe_preview": "Keyframe {} Vorschau"
   },
   "rendering_panel": {
-    "fov_format": "Sichtfeld: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "Sichtfeld: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "Splat-Vereinfachung",
+    "simplify_source": "Quelle",
+    "simplify_select_source": "Wählen Sie einen Splat-Knoten aus",
+    "simplify_target": "Ziel",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "Merge-Limit",
+    "simplify_opacity_prune": "Opazitäts-Pruning",
+    "simplify_original": "Original",
+    "simplify_output": "Ausgabe"
   },
   "scripts_panel": {
     "actions": "Aktionen",

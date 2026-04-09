@@ -586,6 +586,14 @@
     "theme_vignette_intensity": "Dostosuj ciemność winietowania (0-1)",
     "theme_vignette_radius": "Dostosuj, gdzie zaczyna się winietowanie (0-1)",
     "theme_vignette_softness": "Dostosuj miękkość krawędzi winietowania (0-1)",
+    "simplify_source": "Wybrany węzeł splat używany jako wejście uproszczenia",
+    "simplify_target": "Docelowa liczba Gaussów, które mają pozostać w uproszczonym wyniku",
+    "simplify_knn_k": "Rozmiar sąsiedztwa używany do oceny kandydatów do scalania",
+    "simplify_merge_cap": "Maksymalny udział Gaussów, które mogą zostać scalone w jednym przebiegu",
+    "simplify_opacity_prune": "Usuń Gaussy poniżej tego progu nieprzezroczystości przed scalaniem",
+    "simplify_output": "Nazwa nowego uproszczonego węzła splat, który zostanie dodany do sceny",
+    "simplify_apply": "Utwórz nowy uproszczony węzeł splat z wybranego źródła",
+    "simplify_cancel": "Anuluj aktywne zadanie upraszczania splatów",
     "render_scale": "Rozdzielczość widoku (niższa = mniej VRAM)",
     "point_cloud_forced": "Wymuszone przed rozpoczęciem treningu",
     "desaturate_unselected": "Przyciemnij niezaznaczone PLY",
@@ -1016,7 +1024,16 @@
     "keyframe_preview": "Podgląd klatki kluczowej {}"
   },
   "rendering_panel": {
-    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "Uproszczenie splatów",
+    "simplify_source": "Źródło",
+    "simplify_select_source": "Wybierz węzeł splat",
+    "simplify_target": "Cel",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "Limit scalania",
+    "simplify_opacity_prune": "Przycinanie nieprzezroczystości",
+    "simplify_original": "Oryginał",
+    "simplify_output": "Wyjście"
   },
   "scripts_panel": {
     "actions": "Akcje",

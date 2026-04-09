@@ -586,6 +586,14 @@
     "theme_vignette_intensity": "Regola scurità vignetta (0-1)",
     "theme_vignette_radius": "Regola dove inizia la vignettatura (0-1)",
     "theme_vignette_softness": "Regola la morbidezza del bordo della vignettatura (0-1)",
+    "simplify_source": "Nodo splat selezionato usato come input per la semplificazione",
+    "simplify_target": "Numero target di Gaussiane da mantenere nel risultato semplificato",
+    "simplify_knn_k": "Dimensione del vicinato usata per valutare i candidati alla fusione",
+    "simplify_merge_cap": "Frazione massima di Gaussiane che possono fondersi in una singola passata",
+    "simplify_opacity_prune": "Rimuovi le Gaussiane sotto questa soglia di opacità prima della fusione",
+    "simplify_output": "Nome del nuovo nodo splat semplificato che verrà aggiunto alla scena",
+    "simplify_apply": "Crea un nuovo nodo splat semplificato dalla sorgente selezionata",
+    "simplify_cancel": "Annulla il processo attivo di semplificazione splat",
     "render_scale": "Risoluzione viewer (inferiore = meno VRAM)",
     "point_cloud_forced": "Forzato prima dell'addestramento",
     "desaturate_unselected": "Scurisci PLY non selezionati",
@@ -1016,7 +1024,16 @@
     "keyframe_preview": "Anteprima Keyframe {}"
   },
   "rendering_panel": {
-    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "Semplificazione Splat",
+    "simplify_source": "Sorgente",
+    "simplify_select_source": "Seleziona un nodo splat",
+    "simplify_target": "Obiettivo",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "Limite di fusione",
+    "simplify_opacity_prune": "Potatura opacità",
+    "simplify_original": "Originale",
+    "simplify_output": "Output"
   },
   "scripts_panel": {
     "actions": "Azioni",

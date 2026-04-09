@@ -16,6 +16,13 @@ def tr(key):
     return result if result else key
 
 
+def _tr_fallback(key: str, fallback: str) -> str:
+    result = lf.ui.tr(key)
+    if result and result != key:
+        return result
+    return fallback
+
+
 def _theme():
     return lf.ui.theme()
 
@@ -333,13 +340,35 @@ class RenderingPanel(Panel):
         model.bind_func("label_hdr_camera",
                          lambda: "Camera & Projection")
         model.bind_func("label_hdr_simplify",
-                         lambda: "Splat Simplify")
+                         lambda: _tr_fallback("rendering_panel.section_simplify", "Splat Simplify"))
         model.bind_func("label_hdr_selection",
                          lambda: "Selection & Overlays")
         model.bind_func("label_hdr_mesh",
                          lambda: lf.ui.tr("main_panel.mesh") or "Mesh")
         model.bind_func("label_hdr_post_process",
                          lambda: "Post Processing")
+        model.bind_func("label_simplify_source",
+                         lambda: _entry_label(_tr_fallback("rendering_panel.simplify_source", "Source")))
+        model.bind_func("label_simplify_select_source",
+                         lambda: _tr_fallback("rendering_panel.simplify_select_source", "Select a splat node"))
+        model.bind_func("label_simplify_target",
+                         lambda: _entry_label(_tr_fallback("rendering_panel.simplify_target", "Target")))
+        model.bind_func("label_simplify_target_stat",
+                         lambda: _tr_fallback("rendering_panel.simplify_target", "Target"))
+        model.bind_func("label_simplify_knn_k",
+                         lambda: _entry_label(_tr_fallback("rendering_panel.simplify_knn_k", "kNN K")))
+        model.bind_func("label_simplify_merge_cap",
+                         lambda: _entry_label(_tr_fallback("rendering_panel.simplify_merge_cap", "Merge Cap")))
+        model.bind_func("label_simplify_opacity_prune",
+                         lambda: _entry_label(_tr_fallback("rendering_panel.simplify_opacity_prune", "Opacity Prune")))
+        model.bind_func("label_simplify_original",
+                         lambda: _tr_fallback("rendering_panel.simplify_original", "Original"))
+        model.bind_func("label_simplify_output",
+                         lambda: _entry_label(_tr_fallback("rendering_panel.simplify_output", "Output")))
+        model.bind_func("label_simplify_apply",
+                         lambda: _tr_fallback("common.apply", "Apply"))
+        model.bind_func("label_simplify_cancel",
+                         lambda: _tr_fallback("common.cancel", "Cancel"))
         model.bind_func("label_ppisp_color_balance",
                          lambda: _entry_label(
                              lf.ui.tr("main_panel.ppisp_color_balance") or "Color Correction"))

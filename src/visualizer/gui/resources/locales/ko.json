@@ -586,6 +586,14 @@
     "theme_vignette_intensity": "비네팅 어둠 조정 (0-1)",
     "theme_vignette_radius": "비네팅이 시작되는 위치 조정 (0-1)",
     "theme_vignette_softness": "비네팅 가장자리의 부드러움 조정 (0-1)",
+    "simplify_source": "단순화 입력으로 사용할 선택된 스플랫 노드",
+    "simplify_target": "단순화 결과에 유지할 가우시안 목표 개수",
+    "simplify_knn_k": "병합 후보를 평가하는 데 사용하는 이웃 크기",
+    "simplify_merge_cap": "한 번의 패스에서 병합할 수 있는 가우시안의 최대 비율",
+    "simplify_opacity_prune": "병합 전에 이 불투명도 임계값 아래의 가우시안을 제거합니다",
+    "simplify_output": "장면에 추가될 새 단순화 스플랫 노드의 이름",
+    "simplify_apply": "선택한 소스에서 새 단순화 스플랫 노드를 만듭니다",
+    "simplify_cancel": "활성 스플랫 단순화 작업을 취소합니다",
     "render_scale": "뷰어 해상도 (낮을수록=VRAM 감소)",
     "point_cloud_forced": "학습 시작 전 강제",
     "desaturate_unselected": "선택되지 않은 PLY 어둡게",
@@ -1016,7 +1024,16 @@
     "keyframe_preview": "키프레임 {} 미리보기"
   },
   "rendering_panel": {
-    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
+    "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V",
+    "section_simplify": "스플랫 단순화",
+    "simplify_source": "소스",
+    "simplify_select_source": "스플랫 노드를 선택하세요",
+    "simplify_target": "대상",
+    "simplify_knn_k": "kNN K",
+    "simplify_merge_cap": "병합 한도",
+    "simplify_opacity_prune": "불투명도 가지치기",
+    "simplify_original": "원본",
+    "simplify_output": "출력"
   },
   "scripts_panel": {
     "actions": "작업",
