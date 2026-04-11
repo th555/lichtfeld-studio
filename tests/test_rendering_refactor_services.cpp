@@ -292,7 +292,7 @@ namespace lfs::vis {
         ASSERT_FALSE(perspective_settings.orthographic);
 
         const float expected_vfov = glm::degrees(2.0f * std::atan(
-            viewport_height / (2.0f * distance_to_pivot * settings.ortho_scale)));
+                                                            viewport_height / (2.0f * distance_to_pivot * settings.ortho_scale)));
         const float expected_focal = lfs::rendering::vFovToFocalLength(expected_vfov);
         EXPECT_NEAR(perspective_settings.focal_length_mm, expected_focal, 1e-4f);
     }
