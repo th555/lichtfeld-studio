@@ -1,12 +1,12 @@
 /* SPDX-FileCopyrightText: 2026 LichtFeld Studio Authors
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
-#include "visualizer/ipc/view_context.hpp"
 #include "visualizer/ipc/render_settings_convert.hpp"
+#include "visualizer/ipc/view_context.hpp"
 #include "visualizer/rendering/rendering_types.hpp"
 
-#include <gtest/gtest.h>
 #include <glm/gtc/quaternion.hpp>
+#include <gtest/gtest.h>
 
 TEST(RenderSettingsDefaults, CameraFrustumsAreDisabledByDefault) {
     const lfs::vis::RenderSettings render_settings;
