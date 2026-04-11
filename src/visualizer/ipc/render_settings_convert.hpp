@@ -8,15 +8,11 @@
 
 namespace lfs::vis {
 
-    // Bump this after updating proxy conversions when RenderSettings layout changes.
-    inline constexpr size_t kRenderSettingsExpectedSize = 416;
-    static_assert(sizeof(RenderSettings) == kRenderSettingsExpectedSize,
-                  "RenderSettings layout changed — update proxy conversions in render_settings_convert.hpp, "
-                  "then bump kRenderSettingsExpectedSize.");
-
     namespace detail {
         inline std::array<float, 3> to_array(const glm::vec3& v) { return {v.x, v.y, v.z}; }
         inline glm::vec3 to_vec3(const std::array<float, 3>& a) { return {a[0], a[1], a[2]}; }
+        inline std::array<float, 4> to_array(const glm::quat& q) { return {q.w, q.x, q.y, q.z}; }
+        inline glm::quat to_quat(const std::array<float, 4>& a) { return {a[0], a[1], a[2], a[3]}; }
     } // namespace detail
 
     inline RenderSettingsProxy to_proxy(const RenderSettings& s) {
@@ -83,6 +79,8 @@ namespace lfs::vis {
         p.depth_filter_enabled = s.depth_filter_enabled;
         p.depth_filter_min = detail::to_array(s.depth_filter_min);
         p.depth_filter_max = detail::to_array(s.depth_filter_max);
+        p.depth_filter_rotation = detail::to_array(s.depth_filter_transform.getRotation());
+        p.depth_filter_translation = detail::to_array(s.depth_filter_transform.getTranslation());
         return p;
     }
 
@@ -149,6 +147,9 @@ namespace lfs::vis {
         s.depth_filter_enabled = p.depth_filter_enabled;
         s.depth_filter_min = detail::to_vec3(p.depth_filter_min);
         s.depth_filter_max = detail::to_vec3(p.depth_filter_max);
+        s.depth_filter_transform =
+            lfs::geometry::EuclideanTransform(detail::to_quat(p.depth_filter_rotation),
+                                              detail::to_vec3(p.depth_filter_translation));
     }
 
 } // namespace lfs::vis

@@ -123,6 +123,8 @@ namespace lfs::vis {
         bool depth_filter_enabled = false;
         std::array<float, 3> depth_filter_min{-50.0f, -10000.0f, 0.0f};
         std::array<float, 3> depth_filter_max{50.0f, 10000.0f, 100.0f};
+        std::array<float, 4> depth_filter_rotation{1.0f, 0.0f, 0.0f, 0.0f};
+        std::array<float, 3> depth_filter_translation{0.0f, 0.0f, 0.0f};
     };
 
     using GetRenderSettingsCallback = std::function<std::optional<RenderSettingsProxy>()>;
