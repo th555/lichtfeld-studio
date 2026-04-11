@@ -638,6 +638,8 @@
     "seq_quality": "Qualità CRF (più basso = qualità migliore, file più grande)",
     "seq_export": "Esporta video dal percorso camera",
     "seq_clear": "Elimina tutti i keyframe",
+    "seq_dock": "Aggancia il sequencer",
+    "seq_undock": "Sgancia il sequencer",
     "seq_interval": "Intervallo della griglia",
     "seq_preview_size": "Scala anteprima PiP"
   },

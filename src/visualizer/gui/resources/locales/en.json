@@ -638,6 +638,8 @@
     "seq_quality": "CRF quality (lower = better quality, larger file)",
     "seq_export": "Export video from camera path",
     "seq_clear": "Clear all keyframes",
+    "seq_dock": "Dock sequencer",
+    "seq_undock": "Undock sequencer",
     "seq_interval": "Grid snap interval",
     "seq_preview_size": "PiP preview scale",
     "theme_vignette": "Enable viewport edge darkening",

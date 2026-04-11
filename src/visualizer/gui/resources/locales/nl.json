@@ -638,6 +638,8 @@
     "seq_quality": "CRF-kwaliteit (lager = betere kwaliteit, groter bestand)",
     "seq_export": "Video exporteren vanuit camerapad",
     "seq_clear": "Alle keyframes verwijderen",
+    "seq_dock": "Sequencer vastzetten",
+    "seq_undock": "Sequencer losmaken",
     "seq_interval": "Rasterinterval",
     "seq_preview_size": "PiP-voorbeeldschaal"
   },

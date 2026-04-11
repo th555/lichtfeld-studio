@@ -6,8 +6,10 @@
 // clang-format on
 
 #include "sequencer/rml_sequencer_panel.hpp"
+#include "core/event_bridge/localization_manager.hpp"
 #include "core/events.hpp"
 #include "core/logger.hpp"
+#include "gui/film_strip_renderer.hpp"
 #include "gui/rmlui/rml_input_utils.hpp"
 #include "gui/rmlui/rml_panel_host.hpp"
 #include "gui/rmlui/rml_theme.hpp"
@@ -188,6 +190,10 @@ namespace lfs::vis {
             panel->load_path_requested_ = true;
         else if (id == "btn-export")
             panel->export_requested_ = true;
+        else if (id == "btn-dock-toggle")
+            panel->dock_toggle_requested_ = true;
+        else if (id == "btn-close-panel")
+            panel->close_panel_requested_ = true;
         else if (id == "btn-clear") {
             float sx = panel->cached_panel_x_;
             float sy = panel->cached_panel_y_;
@@ -269,6 +275,8 @@ namespace lfs::vis {
 
     void RmlSequencerPanel::cacheElements() {
         assert(document_);
+        el_panel_ = document_->GetElementById("panel");
+        el_floating_header_ = document_->GetElementById("floating-header");
         el_ruler_ = document_->GetElementById("ruler");
         el_track_bar_ = document_->GetElementById("track-bar");
         el_keyframes_ = document_->GetElementById("keyframes");
@@ -297,6 +305,11 @@ namespace lfs::vis {
         el_btn_load_ = document_->GetElementById("btn-load-path");
         el_btn_export_ = document_->GetElementById("btn-export");
         el_btn_clear_ = document_->GetElementById("btn-clear");
+        el_transport_dock_sep_ = document_->GetElementById("dock-toggle-sep");
+        el_btn_dock_toggle_ = document_->GetElementById("btn-dock-toggle");
+        el_dock_toggle_label_ = document_->GetElementById("dock-toggle-label");
+        el_btn_close_panel_ = document_->GetElementById("btn-close-panel");
+        el_close_panel_label_ = document_->GetElementById("close-panel-label");
 
         elements_cached_ = el_ruler_ && el_keyframes_ && el_playhead_ &&
                            el_current_time_ && el_duration_ && el_play_icon_ &&
@@ -312,7 +325,8 @@ namespace lfs::vis {
                                    "btn-camera-path", "btn-snap", "btn-follow",
                                    "btn-film-strip", "btn-preview", "btn-equirect", "btn-speed",
                                    "btn-format", "btn-save-path", "btn-load-path",
-                                   "btn-export", "btn-clear"}) {
+                                   "btn-export", "btn-clear", "btn-dock-toggle",
+                                   "btn-close-panel"}) {
             auto* el = document_->GetElementById(btn_id);
             if (el)
                 el->AddEventListener(Rml::EventId::Click, &transport_listener_);
@@ -429,11 +443,13 @@ namespace lfs::vis {
             return;
 
         const auto& p = lfs::vis::theme().palette;
-        const bool layout_changed = film_strip_attached_ != last_film_strip_attached_;
+        const bool layout_changed = film_strip_attached_ != last_film_strip_attached_ ||
+                                    floating_ != last_floating_;
         if (!layout_changed && std::memcmp(last_synced_text_, &p.text, sizeof(last_synced_text_)) == 0)
             return;
         std::memcpy(last_synced_text_, &p.text, sizeof(last_synced_text_));
         last_film_strip_attached_ = film_strip_attached_;
+        last_floating_ = floating_;
 
         if (base_rcss_.empty())
             base_rcss_ = gui::rml_theme::loadBaseRCSS("rmlui/sequencer.rcss");
@@ -656,7 +672,7 @@ namespace lfs::vis {
         const float local_x = input.mouse_x - cached_panel_x_;
         const float local_y = input.mouse_y - cached_panel_y_;
 
-        const float total_h = (HEIGHT + EASING_STRIPE_HEIGHT) * cached_dp_ratio_;
+        const float total_h = cached_height_ + EASING_STRIPE_HEIGHT * cached_dp_ratio_;
         hovered_ = local_x >= 0 && local_y >= 0 &&
                    local_x < cached_panel_width_ && local_y < total_h;
 
@@ -751,6 +767,18 @@ namespace lfs::vis {
         return request;
     }
 
+    bool RmlSequencerPanel::consumeDockToggleRequest() {
+        const bool request = dock_toggle_requested_;
+        dock_toggle_requested_ = false;
+        return request;
+    }
+
+    bool RmlSequencerPanel::consumeClosePanelRequest() {
+        const bool request = close_panel_requested_;
+        close_panel_requested_ = false;
+        return request;
+    }
+
     bool RmlSequencerPanel::consumeClearRequest() {
         const bool r = clear_requested_;
         clear_requested_ = false;
@@ -797,6 +825,26 @@ namespace lfs::vis {
             el_btn_export_->SetClass("disabled", !has_camera_keyframes);
         if (el_btn_clear_)
             el_btn_clear_->SetClass("disabled", !has_any_state);
+        if (el_panel_)
+            el_panel_->SetClass("is-floating", floating_);
+        if (el_floating_header_)
+            el_floating_header_->SetClass("hidden", !floating_);
+        if (el_transport_dock_sep_)
+            el_transport_dock_sep_->SetClass("hidden", false);
+        if (el_btn_dock_toggle_) {
+            el_btn_dock_toggle_->SetAttribute("data-tooltip",
+                                              floating_ ? "tooltip.seq_dock" : "tooltip.seq_undock");
+            el_btn_dock_toggle_->SetClass("active", false);
+            el_btn_dock_toggle_->SetClass("hidden", false);
+        }
+        if (el_dock_toggle_label_)
+            el_dock_toggle_label_->SetInnerRML(floating_ ? "Dock" : "Undock");
+        if (el_btn_close_panel_) {
+            el_btn_close_panel_->SetAttribute("data-tooltip", "common.close");
+            el_btn_close_panel_->SetClass("hidden", !floating_);
+        }
+        if (el_close_panel_label_)
+            el_close_panel_label_->SetInnerRML(lfs::event::LocalizationManager::getInstance().get("common.close"));
     }
 
     float RmlSequencerPanel::timelineWidth() const {
@@ -804,20 +852,15 @@ namespace lfs::vis {
         return cached_panel_width_ - 2.0f * INNER_PADDING_H * s;
     }
 
-    void RmlSequencerPanel::render(const float viewport_x, const float viewport_width,
-                                   const float viewport_y_bottom,
+    void RmlSequencerPanel::render(const float panel_x, const float panel_y,
+                                   const float panel_width, const float total_height,
                                    const PanelInputState& input) {
         const float dp = rml_manager_->getDpRatio();
         cached_dp_ratio_ = dp;
-        cached_height_ = HEIGHT * dp;
-        const float total_height = (HEIGHT + EASING_STRIPE_HEIGHT) * dp;
 
-        const float padding_h = PADDING_H * dp;
-        const float padding_bottom = PADDING_BOTTOM * dp;
-
-        const float panel_x = viewport_x + padding_h;
-        const float panel_width = viewport_width - 2.0f * padding_h;
-        const float panel_y = viewport_y_bottom - total_height - padding_bottom;
+        const float strip_height = film_strip_attached_ ? gui::FilmStripRenderer::STRIP_HEIGHT : 0.0f;
+        const float easing_height = EASING_STRIPE_HEIGHT * dp;
+        cached_height_ = std::max(0.0f, total_height - easing_height - strip_height);
 
         cached_panel_x_ = panel_x;
         cached_panel_y_ = panel_y;

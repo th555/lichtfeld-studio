@@ -108,6 +108,7 @@ namespace lfs::vis::gui {
         virtual bool wantsKeyboard() const { return false; }
         virtual bool needsAnimationFrame() const { return false; }
         virtual bool wantsExternalFloatingShadow() const { return true; }
+        virtual void setPanelSpace(PanelSpace space) { (void)space; }
     };
 
     struct PanelInfo {

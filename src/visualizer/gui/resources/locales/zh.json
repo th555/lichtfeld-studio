@@ -638,6 +638,8 @@
     "seq_quality": "CRF质量（值越低 = 质量越高，文件越大）",
     "seq_export": "从相机路径导出视频",
     "seq_clear": "删除所有关键帧",
+    "seq_dock": "停靠序列器",
+    "seq_undock": "取消停靠序列器",
     "seq_interval": "网格对齐间隔",
     "seq_preview_size": "画中画预览缩放"
   },

@@ -638,6 +638,8 @@
     "seq_quality": "CRF品質（低い値 = 高品質、ファイルサイズ大）",
     "seq_export": "カメラパスから動画をエクスポート",
     "seq_clear": "すべてのキーフレームを削除",
+    "seq_dock": "シーケンサーをドッキング",
+    "seq_undock": "シーケンサーのドッキングを解除",
     "seq_interval": "グリッドスナップ間隔",
     "seq_preview_size": "PiPプレビュースケール"
   },

@@ -470,8 +470,10 @@ namespace lfs::vis::gui {
 
         if (space == PanelSpace::Floating) {
             for (size_t i = 0; i < snapshots.size(); ++i) {
-                if (should_draw[i])
+                if (should_draw[i]) {
+                    snapshots[i].panel->setPanelSpace(space);
                     prepare_floating_direct_layout(snapshots[i], floating_direct_layouts[i]);
+                }
             }
 
             if (input) {
@@ -495,6 +497,7 @@ namespace lfs::vis::gui {
 
             try {
                 ImGui::PushID(snap.id.c_str());
+                snap.panel->setPanelSpace(space);
 
                 switch (space) {
                 case PanelSpace::Floating: {
@@ -732,6 +735,7 @@ namespace lfs::vis::gui {
             }
 
             try {
+                snap.panel->setPanelSpace(space);
                 snap.panel->preload(ctx);
             } catch (const std::exception& e) {
                 LOG_ERROR("Panel '{}' preload error: {}", snap.label, e.what());
@@ -812,6 +816,7 @@ namespace lfs::vis::gui {
 
             bool draw_succeeded = false;
             try {
+                snap.panel->setPanelSpace(space);
                 snap.panel->setInput(input);
                 snap.panel->drawDirect(x, y + y_offset, w, remaining, ctx);
                 snap.panel->setInput(nullptr);
@@ -862,6 +867,7 @@ namespace lfs::vis::gui {
             bool preload_succeeded = false;
             try {
                 snap.panel->setInputClipY(clip_y_min, clip_y_max);
+                snap.panel->setPanelSpace(space);
                 snap.panel->setInput(input);
                 snap.panel->preloadDirect(w, remaining, ctx, clip_y_min, clip_y_max, input);
                 snap.panel->setInput(nullptr);
@@ -881,6 +887,7 @@ namespace lfs::vis::gui {
     void PanelRegistry::draw_single_panel(const std::string& id, const PanelDrawContext& ctx) {
         std::shared_ptr<IPanel> panel_holder;
         PanelSnapshot snap{};
+        PanelSpace panel_space = PanelSpace::Floating;
         bool found = false;
         {
             std::lock_guard lock(mutex_);
@@ -891,6 +898,7 @@ namespace lfs::vis::gui {
                             panels_[i].parent_id, panels_[i].options, panels_[i].is_native,
                             panels_[i].poll_dependencies, panels_[i].initial_width, panels_[i].initial_height,
                             panels_[i].float_x, panels_[i].float_y};
+                    panel_space = panels_[i].space;
                     found = true;
                     break;
                 }
@@ -911,6 +919,7 @@ namespace lfs::vis::gui {
         bool draw_succeeded = false;
         try {
             ImGui::PushID(snap.id.c_str());
+            snap.panel->setPanelSpace(panel_space);
             snap.panel->draw(ctx);
             ImGui::PopID();
             draw_succeeded = true;
@@ -1207,6 +1216,7 @@ namespace lfs::vis::gui {
                                                   const PanelInputState* input) {
         std::shared_ptr<IPanel> panel_holder;
         PanelSnapshot snap{};
+        PanelSpace panel_space = PanelSpace::Floating;
         bool found = false;
         {
             std::lock_guard lock(mutex_);
@@ -1217,6 +1227,7 @@ namespace lfs::vis::gui {
                             panels_[i].parent_id, panels_[i].options, panels_[i].is_native,
                             panels_[i].poll_dependencies, panels_[i].initial_width, panels_[i].initial_height,
                             panels_[i].float_x, panels_[i].float_y};
+                    panel_space = panels_[i].space;
                     found = true;
                     break;
                 }
@@ -1236,6 +1247,7 @@ namespace lfs::vis::gui {
 
         bool draw_succeeded = false;
         try {
+            snap.panel->setPanelSpace(panel_space);
             snap.panel->setInputClipY(clip_y_min, clip_y_max);
             snap.panel->setInput(input);
             snap.panel->drawDirect(x, y, w, h, ctx);
@@ -1257,6 +1269,7 @@ namespace lfs::vis::gui {
                                                      const PanelInputState* input) {
         std::shared_ptr<IPanel> panel_holder;
         PanelSnapshot snap{};
+        PanelSpace panel_space = PanelSpace::Floating;
         bool found = false;
         {
             std::lock_guard lock(mutex_);
@@ -1267,6 +1280,7 @@ namespace lfs::vis::gui {
                             panels_[i].parent_id, panels_[i].options, panels_[i].is_native,
                             panels_[i].poll_dependencies, panels_[i].initial_width, panels_[i].initial_height,
                             panels_[i].float_x, panels_[i].float_y};
+                    panel_space = panels_[i].space;
                     found = true;
                     break;
                 }
@@ -1286,6 +1300,7 @@ namespace lfs::vis::gui {
 
         bool preload_succeeded = false;
         try {
+            snap.panel->setPanelSpace(panel_space);
             snap.panel->setInputClipY(clip_y_min, clip_y_max);
             snap.panel->setInput(input);
             snap.panel->preloadDirect(w, h, ctx, clip_y_min, clip_y_max, input);
