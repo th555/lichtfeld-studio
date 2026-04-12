@@ -863,7 +863,8 @@
     "visible": "Visible",
     "hidden": "Hidden",
     "mask_section": "MASK",
-    "storage_section": "STORAGE"
+    "storage_section": "STORAGE",
+    "color_picker": "Pick"
   },
   "startup": {
     "supported_by": "Supported by",

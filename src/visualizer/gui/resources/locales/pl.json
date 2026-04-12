@@ -851,7 +851,8 @@
     "no_image": "Brak obrazu",
     "zoom": "Zoom",
     "fit": "Dopasuj",
-    "storage_section": "MAGAZYN"
+    "storage_section": "MAGAZYN",
+    "color_picker": "Pobierz"
   },
   "startup": {
     "supported_by": "Wspierane przez",

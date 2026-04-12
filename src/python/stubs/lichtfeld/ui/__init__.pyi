@@ -2143,6 +2143,11 @@ def get_image_info(path: str) -> tuple:
     Get image dimensions without loading pixel data, returns (width, height, channels)
     """
 
+def sample_image_color(path: str, x: int, y: int, radius: int = 10) -> tuple:
+    """
+    Sample average color around pixel (x, y) within given radius, returns (r, g, b) in 0..1
+    """
+
 def preload_image_async(path: str) -> None:
     """Start async preload of image data"""
 

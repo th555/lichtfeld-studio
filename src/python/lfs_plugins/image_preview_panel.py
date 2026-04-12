@@ -11,9 +11,9 @@ from urllib.parse import quote
 import lichtfeld as lf
 from .types import Panel
 from .rml_keys import (
-    KI_1, KI_ADD, KI_DOWN, KI_END, KI_ESCAPE, KI_F, KI_HOME, KI_I, KI_LEFT,
-    KI_M, KI_OEM_MINUS, KI_OEM_PLUS, KI_R, KI_RIGHT, KI_SPACE, KI_SUBTRACT,
-    KI_T, KI_UP,
+    KI_1, KI_ADD, KI_C, KI_DOWN, KI_END, KI_ESCAPE, KI_F, KI_HOME, KI_I,
+    KI_LEFT, KI_M, KI_OEM_MINUS, KI_OEM_PLUS, KI_R, KI_RIGHT, KI_SPACE,
+    KI_SUBTRACT, KI_T, KI_UP,
 )
 
 ZOOM_MIN = 0.1
@@ -64,6 +64,7 @@ class ImagePreviewPanel(Panel):
         self._drag_start_pan_x = 0.0
         self._drag_start_pan_y = 0.0
         self._hover_image = False
+        self._color_picker_active = False
 
         self._doc = None
         self._dirty = True
@@ -349,10 +350,15 @@ class ImagePreviewPanel(Panel):
         self._dirty = True
 
     def _on_img_mousedown(self, event):
-        if self._fit_to_window:
-            return
         button = int(event.get_parameter("button", "0"))
         if button != 0:
+            return
+
+        if self._color_picker_active and self._image_paths:
+            self._perform_color_pick(event)
+            return
+
+        if self._fit_to_window:
             return
         self._dragging = True
         self._drag_start_x = float(event.get_parameter("mouse_x", "0"))
@@ -656,6 +662,7 @@ class ImagePreviewPanel(Panel):
             "hk-mask": tr("image_preview.mask"),
             "hk-reset": tr("common.reset"),
             "hk-close": tr("common.close"),
+            "hk-color-picker": tr("image_preview.color_picker"),
         }.items():
             _set_text(doc, element_id, text)
 
@@ -766,6 +773,83 @@ class ImagePreviewPanel(Panel):
         _set_text(doc, "st-zoom", f"{lf.ui.tr('image_preview.zoom')} {self._get_zoom_display()}")
         _set_text(doc, "st-counter", f"{self._current_index + 1} / {len(self._image_paths)}")
 
+    # -- Color Picker --
+
+    def _perform_color_pick(self, event):
+        """Sample the average color at the clicked position and set as bg_color."""
+        path = self._image_paths[self._current_index]
+        w, h, _ = self._get_image_info(path)
+        if w <= 0 or h <= 0:
+            return
+
+        viewport = self._doc.get_element_by_id("image-viewport") if self._doc else None
+        if not viewport:
+            return
+
+        dp_ratio = max(1.0, lf.ui.get_ui_scale())
+        vw = max(1, int(viewport.client_width / dp_ratio))
+        vh = max(1, int(viewport.client_height / dp_ratio))
+
+        if self._fit_to_window:
+            scale = min(1.0, vw / w, vh / h)
+        else:
+            scale = self._zoom
+
+        dw = max(1, int(round(w * scale)))
+        dh = max(1, int(round(h * scale)))
+
+        ox = (vw - dw) * 0.5
+        oy = (vh - dh) * 0.5
+        if not self._fit_to_window:
+            ox += self._pan_x
+            oy += self._pan_y
+
+        # Get click position relative to the viewport
+        vp_left = viewport.absolute_left
+        vp_top = viewport.absolute_top
+        mx = float(event.get_parameter("mouse_x", "0")) / dp_ratio - vp_left / dp_ratio
+        my = float(event.get_parameter("mouse_y", "0")) / dp_ratio - vp_top / dp_ratio
+
+        # Convert screen position to image pixel coordinates
+        ix = int(round((mx - ox) / scale))
+        iy = int(round((my - oy) / scale))
+
+        if ix < 0 or ix >= w or iy < 0 or iy >= h:
+            return
+
+        try:
+            r, g, b = lf.ui.sample_image_color(str(path), ix, iy, 10)
+        except Exception:
+            return
+
+        color = (r, g, b)
+        try:
+            params = lf.optimization_params()
+            params.bg_color = color
+        except Exception:
+            pass
+        try:
+            rs = lf.get_render_settings()
+            if rs:
+                rs.set("background_color", color)
+        except Exception:
+            pass
+
+        self._color_picker_active = False
+        self._update_picker_cursor()
+        self._dirty = True
+
+    def _update_picker_cursor(self):
+        """Toggle the picker-active CSS class on the image container."""
+        if not self._doc:
+            return
+        container = self._doc.get_element_by_id("image-container")
+        if container:
+            if self._color_picker_active:
+                container.set_attribute("class", "picker-active")
+            else:
+                container.set_attribute("class", "")
+
     # -- Keyboard --
 
     def _on_keydown(self, event):
@@ -824,8 +908,19 @@ class ImagePreviewPanel(Panel):
             self._reset_view()
             self._dirty = True
             event.stop_propagation()
+        elif key == KI_C:
+            if self._image_paths:
+                self._color_picker_active = not self._color_picker_active
+                self._update_picker_cursor()
+                self._dirty = True
+            event.stop_propagation()
         elif key == KI_ESCAPE:
-            self._close_panel()
+            if self._color_picker_active:
+                self._color_picker_active = False
+                self._update_picker_cursor()
+                self._dirty = True
+            else:
+                self._close_panel()
             event.stop_propagation()
 
     # -- Helpers --

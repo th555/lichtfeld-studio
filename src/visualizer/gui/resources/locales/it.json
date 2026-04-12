@@ -851,7 +851,8 @@
     "no_image": "Nessuna immagine",
     "zoom": "Zoom",
     "fit": "Adatta",
-    "storage_section": "ARCHIVIAZIONE"
+    "storage_section": "ARCHIVIAZIONE",
+    "color_picker": "Preleva"
   },
   "startup": {
     "supported_by": "Supportato da",

@@ -851,7 +851,8 @@
     "no_image": "Sin imagen",
     "zoom": "Zoom",
     "fit": "Ajustar",
-    "storage_section": "ALMACENAMIENTO"
+    "storage_section": "ALMACENAMIENTO",
+    "color_picker": "Tomar"
   },
   "startup": {
     "supported_by": "Apoyado por",

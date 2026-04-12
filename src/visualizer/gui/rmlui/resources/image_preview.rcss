@@ -83,6 +83,10 @@
     min-height: 0;
 }
 
+#image-container.picker-active {
+    cursor: pointer;
+}
+
 #image-viewport {
     position: absolute;
     top: 0;

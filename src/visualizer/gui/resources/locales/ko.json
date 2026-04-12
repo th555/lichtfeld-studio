@@ -851,7 +851,8 @@
     "no_image": "이미지 없음",
     "zoom": "줌",
     "fit": "맞춤",
-    "storage_section": "저장소"
+    "storage_section": "저장소",
+    "color_picker": "스포이트"
   },
   "startup": {
     "supported_by": "지원:",

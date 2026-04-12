@@ -110,6 +110,7 @@
       <span class="hk"><span class="hk-key">I</span><span class="hk-label" id="hk-info"></span></span>
       <span class="hk"><span class="hk-key">T</span><span class="hk-label" id="hk-thumbnails"></span></span>
       <span class="hk"><span class="hk-key">M</span><span class="hk-label" id="hk-mask"></span></span>
+      <span class="hk"><span class="hk-key">C</span><span class="hk-label" id="hk-color-picker"></span></span>
       <span class="hk"><span class="hk-key">R</span><span class="hk-label" id="hk-reset"></span></span>
       <span class="hk"><span class="hk-key">Esc</span><span class="hk-label" id="hk-close"></span></span>
     </span>

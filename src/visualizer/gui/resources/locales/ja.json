@@ -851,7 +851,8 @@
     "no_image": "画像なし",
     "zoom": "ズーム",
     "fit": "フィット",
-    "storage_section": "ストレージ"
+    "storage_section": "ストレージ",
+    "color_picker": "スポイト"
   },
   "startup": {
     "supported_by": "サポート",

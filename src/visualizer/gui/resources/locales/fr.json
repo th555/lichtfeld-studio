@@ -851,7 +851,8 @@
     "no_image": "Pas d image",
     "zoom": "Zoom",
     "fit": "Ajuster",
-    "storage_section": "STOCKAGE"
+    "storage_section": "STOCKAGE",
+    "color_picker": "Pipette"
   },
   "startup": {
     "supported_by": "Soutenu par",

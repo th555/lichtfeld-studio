@@ -851,7 +851,8 @@
     "no_image": "无图像",
     "zoom": "缩放",
     "fit": "适配",
-    "storage_section": "存储"
+    "storage_section": "存储",
+    "color_picker": "取色"
   },
   "startup": {
     "supported_by": "支持：",

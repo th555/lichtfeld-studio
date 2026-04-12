@@ -4410,6 +4410,49 @@ namespace lfs::python {
             nb::arg("path"), "Get image dimensions without loading pixel data, returns (width, height, channels)");
 
         m.def(
+            "sample_image_color",
+            [](const std::string& path, int x, int y, int radius) -> nb::tuple {
+                try {
+                    auto [data, w, h, channels] = lfs::core::load_image(lfs::core::utf8_to_path(path), -1, -1);
+                    if (!data)
+                        return nb::make_tuple(0.0f, 0.0f, 0.0f);
+
+                    const int x0 = std::max(0, x - radius);
+                    const int y0 = std::max(0, y - radius);
+                    const int x1 = std::min(w - 1, x + radius);
+                    const int y1 = std::min(h - 1, y + radius);
+
+                    double r_sum = 0.0, g_sum = 0.0, b_sum = 0.0;
+                    int count = 0;
+                    const int ch = std::min(channels, 3);
+                    for (int py = y0; py <= y1; ++py) {
+                        for (int px = x0; px <= x1; ++px) {
+                            const unsigned char* pixel = data + (static_cast<size_t>(py) * w + px) * channels;
+                            r_sum += pixel[0];
+                            g_sum += (ch > 1) ? pixel[1] : pixel[0];
+                            b_sum += (ch > 2) ? pixel[2] : pixel[0];
+                            ++count;
+                        }
+                    }
+
+                    lfs::core::free_image(data);
+
+                    if (count == 0)
+                        return nb::make_tuple(0.0f, 0.0f, 0.0f);
+
+                    return nb::make_tuple(
+                        static_cast<float>(r_sum / (count * 255.0)),
+                        static_cast<float>(g_sum / (count * 255.0)),
+                        static_cast<float>(b_sum / (count * 255.0)));
+                } catch (const std::exception& e) {
+                    LOG_WARN("sample_image_color failed for {}: {}", path, e.what());
+                    return nb::make_tuple(0.0f, 0.0f, 0.0f);
+                }
+            },
+            nb::arg("path"), nb::arg("x"), nb::arg("y"), nb::arg("radius") = 10,
+            "Sample average color around pixel (x, y) within given radius, returns (r, g, b) in 0..1");
+
+        m.def(
             "preload_image_async",
             [](const std::string& path) {
                 std::lock_guard lock(g_preload_mutex);

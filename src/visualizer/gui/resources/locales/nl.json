@@ -851,7 +851,8 @@
     "no_image": "Geen afbeelding",
     "zoom": "Zoom",
     "fit": "Passend",
-    "storage_section": "OPSLAG"
+    "storage_section": "OPSLAG",
+    "color_picker": "Pipet"
   },
   "startup": {
     "supported_by": "Ondersteund door",

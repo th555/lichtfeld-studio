@@ -851,7 +851,8 @@
     "no_image": "Kein Bild",
     "zoom": "Zoom",
     "fit": "Anpassen",
-    "storage_section": "SPEICHER"
+    "storage_section": "SPEICHER",
+    "color_picker": "Pipette"
   },
   "startup": {
     "supported_by": "Unterstützt von",
