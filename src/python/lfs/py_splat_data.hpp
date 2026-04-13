@@ -6,8 +6,8 @@
 
 #include "core/splat_data.hpp"
 #include "py_tensor.hpp"
-#include <nanobind/nanobind.h>
 #include <memory>
+#include <nanobind/nanobind.h>
 #include <optional>
 
 namespace nb = nanobind;
