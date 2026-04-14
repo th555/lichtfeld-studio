@@ -206,66 +206,6 @@ jobs:
           path: ${{ steps.package.outputs.package_name }}
           if-no-files-found: error
 
-  publish:
-    needs: build-windows
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build-windows.outputs.artifact_name }}
-
-      - name: Update nightly release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: nightly
-          name: Nightly Build
-          overwrite_files: true
-          prerelease: true
-          target_commitish: ${{ needs.build-windows.outputs.full_sha }}
-          files: ${{ needs.build-windows.outputs.package_name }}
-          body: |
-            Automated nightly build from `${{ needs.build-windows.outputs.full_sha }}`
-
-            **Nightly version:** `v${{ needs.build-windows.outputs.nightly_version }}`
-            **Built:** ${{ needs.build-windows.outputs.built_at }}
-            **Branch:** ${{ github.event.repository.default_branch }}
-            **Assets retained:** latest 7 builds
-
-            This is an unstable development build. For stable releases, see the [Releases](../../releases) page.
-
-      - name: Trim nightly assets to latest 7 builds
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/nightly")
-          mapfile -t old_assets < <(
-            printf '%s' "$release_json" | jq -r '
-              [.assets[]
-               | select(.name | test("^LichtFeld-Studio-windows-v[0-9]+\\.[0-9]+\\.dev[0-9]{8}\\+[0-9a-f]+\\.zip$"))
-               | {id, name, created_at}]
-              | sort_by(.created_at)
-              | reverse
-              | .[7:]
-              | .[]
-              | @base64'
-          )
-
-          for encoded in "${old_assets[@]}"; do
-            asset=$(printf '%s' "$encoded" | base64 --decode)
-            asset_id=$(printf '%s' "$asset" | jq -r '.id')
-            asset_name=$(printf '%s' "$asset" | jq -r '.name')
-            echo "Deleting old nightly asset: $asset_name"
-            gh api \
-              --method DELETE \
-              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-          done
-
   publish-r2:
     needs: build-windows
     runs-on: ubuntu-latest
